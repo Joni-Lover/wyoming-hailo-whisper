@@ -2,20 +2,20 @@
 import argparse
 import asyncio
 import io
-import time
 import logging
+import time
 import wave
 
 import numpy as np
-from wyoming_hailo_whisper.app.hailo_whisper_pipeline import HailoWhisperPipeline
-from wyoming_hailo_whisper.common.preprocessing import preprocess, improve_input_audio
-from wyoming_hailo_whisper.common.postprocessing import clean_transcription
-
 from wyoming.asr import Transcribe, Transcript
 from wyoming.audio import AudioChunk, AudioChunkConverter, AudioStop
 from wyoming.event import Event
 from wyoming.info import Describe, Info
 from wyoming.server import AsyncEventHandler
+
+from wyoming_hailo_whisper.app.hailo_whisper_pipeline import HailoWhisperPipeline
+from wyoming_hailo_whisper.common.postprocessing import clean_transcription
+from wyoming_hailo_whisper.common.preprocessing import improve_input_audio, preprocess
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +35,8 @@ class HailoWhisperEventHandler(AsyncEventHandler):
     ) -> None:
         super().__init__(*args, **kwargs)
 
+        _LOGGER.info(cli_args)
+        _LOGGER.info(model)
         self.cli_args = cli_args
         self.wyoming_info_event = wyoming_info.event()
         self.model = model
@@ -90,11 +92,16 @@ class HailoWhisperEventHandler(AsyncEventHandler):
                 #assert self.model_proc.stdin is not None
                 #assert self.model_proc.stdout is not None
 
-                async with self.model_lock: 
+                async with self.model_lock:
+                    transcription = ""
+                    _LOGGER.info(f"Processing mel spectrograms: {len(mel_spectrograms)}")
                     for mel in mel_spectrograms:
+                        _LOGGER.info(f"Processing mel spectrogram: {mel}")
                         self.model.send_data(mel)
                         time.sleep(0.2)
-                        transcription = clean_transcription(self.model.get_transcription())
+                        raw_transcription = self.model.get_transcription()
+                        _LOGGER.info(raw_transcription)
+                        transcription += clean_transcription(raw_transcription)
 
                 text = transcription.replace("[BLANK_AUDIO]", "").strip()
 
@@ -122,4 +129,3 @@ class HailoWhisperEventHandler(AsyncEventHandler):
             return True
 
         return True
-
