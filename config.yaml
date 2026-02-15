@@ -1,6 +1,6 @@
 name: "Wyoming Hailo Whisper"
 description: "Hailo Whisper model for HA addon"
-version: "0.0.9"
+version: "0.0.10"
 slug: "hailo_whisper_addon"
 init: false
 arch:
