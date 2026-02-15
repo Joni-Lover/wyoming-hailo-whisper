@@ -49,6 +49,12 @@ def get_args():
         choices=["base", "tiny"],
         help="Whisper variant to use (default: base)"
     )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="en",
+        help="Language code for transcription (default: en)"
+    )
     return parser.parse_args()
 
 def get_hef_path(model_variant: str, hw_arch: str, component: str) -> str:
@@ -186,7 +192,7 @@ class AudioRecorder:
 
     def is_recording(self):
         return self.recording
-    
+
     def wait_until_finished(self, countdown_placeholder=None):
         start_time = time.time()
         while not self.finished_event.is_set():
@@ -214,12 +220,11 @@ class AudioRecorder:
 def process_and_transcribe():
     sampled_audio = load_audio(AUDIO_PATH)
     sampled_audio, start_time = improve_input_audio(sampled_audio, vad=True, low_audio_gain=True)
-    mel_spectrograms = preprocess(sampled_audio, is_nhwc=IS_NHWC, chunk_length=st.session_state.chunk_length, chunk_offset=start_time - 0.2)
+    chunk_offset = max((start_time or 0.0) - 0.2, 0.0)
+    mel_spectrograms = preprocess(sampled_audio, is_nhwc=IS_NHWC, chunk_length=st.session_state.chunk_length, chunk_offset=chunk_offset)
     results = []
     for mel in mel_spectrograms:
-        st.session_state.whisper_hailo.send_data(mel)
-        time.sleep(0.2)
-        transcription = st.session_state.whisper_hailo.get_transcription()
+        transcription = st.session_state.whisper_hailo.transcribe_mel(mel, language=st.session_state.language)
         results.append(transcription)
     return results
 
@@ -233,20 +238,59 @@ if 'recorder' not in st.session_state:
 if 'initialized' not in st.session_state:
     args = get_args()
     variant = args.variant
+    language = args.language
     print(f"Selected variant: Whisper {variant}")
+    print(f"Selected language: {language}")
     st.session_state.variant = variant
-    st.session_state.chunk_length = 10 if variant == "tiny" else 5
+    st.session_state.language = language
     encoder_path = get_hef_path(variant, args.hw_arch, "encoder")
     decoder_path = get_hef_path(variant, args.hw_arch, "decoder")
     st.session_state.initialized = True
     print("Initializing whisper model...")
-    st.session_state.whisper_hailo = HailoWhisperPipeline(encoder_path, decoder_path, variant=variant)
+    st.session_state.whisper_hailo = HailoWhisperPipeline(encoder_path, decoder_path, variant=variant, language=language)
+    st.session_state.chunk_length = st.session_state.whisper_hailo.get_model_input_audio_length()
     print("Initialization complete!")
 
 mic_icon_base64 = get_base64_svg(MIC_ICON_PATH)
 inject_custom_css(mic_icon_base64)
 render_logos()
 render_header()
+
+# Language selector
+language_options = {
+    "English": "en",
+    "Russian": "ru",
+    "Spanish": "es",
+    "French": "fr",
+    "German": "de",
+    "Italian": "it",
+    "Portuguese": "pt",
+    "Chinese": "zh",
+    "Japanese": "ja",
+    "Korean": "ko",
+}
+
+col1, col2, col3 = st.columns([1, 1, 1])
+with col2:
+    selected_language = st.selectbox(
+        "Select Language:",
+        options=list(language_options.keys()),
+        index=list(language_options.values()).index(st.session_state.language),
+        key="language_selector"
+    )
+
+# Check if language changed and reinitialize model if needed
+new_language = language_options[selected_language]
+if new_language != st.session_state.language:
+    st.session_state.language = new_language
+    print(f"Reinitializing model with language: {new_language}")
+    encoder_path = get_hef_path(st.session_state.variant, args.hw_arch, "encoder")
+    decoder_path = get_hef_path(st.session_state.variant, args.hw_arch, "decoder")
+    st.session_state.whisper_hailo.stop()
+    st.session_state.whisper_hailo = HailoWhisperPipeline(encoder_path, decoder_path, variant=st.session_state.variant, language=new_language)
+    st.session_state.chunk_length = st.session_state.whisper_hailo.get_model_input_audio_length()
+    print("Model reinitialized!")
+    st.success(f"Language changed to {selected_language}")
 
 record_button = render_record_button()
 status_indicator, transcription_placeholder = render_transcription_section()
@@ -260,7 +304,7 @@ if record_button:
         status_indicator.info("Recording started.. Press the button again to stop.")
         st.session_state.recorder.start_recording()
         st.session_state.recorder.wait_until_finished(countdown_placeholder)
-        
+
         status_indicator.success("Recording finished.")
         audio_data = st.session_state.recorder.save_to_wav(AUDIO_PATH)
         st.audio(AUDIO_PATH, format="audio/wav")
@@ -278,7 +322,7 @@ if record_button:
     success = bool(results and results[0])
 
     if not success:
-            results = ["Sorry, I haven't understood what you said. Please try again."]
+        results = ["Sorry, I haven't understood what you said. Please try again."]
     transcription_placeholder.markdown(
         f"""### Transcription Result
         {clean_transcription(results[0])}

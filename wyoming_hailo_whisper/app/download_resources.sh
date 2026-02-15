@@ -40,10 +40,10 @@ wget -P hefs/h8/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/
 echo "Creating new 'hefs/h8l/base' directory..."
 mkdir -p hefs/h8l/base
 echo "Downloading base-whisper-decoder for Hailo-8L..."
-wget -P hefs/h8l/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/base-whisper-decoder-fixed-sequence-matmul-split_h8l.hef"
+wget -P hefs/h8l/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8l/base-whisper-decoder-fixed-sequence-matmul-split_h8l.hef"
 
 echo "Downloading base-whisper-encoder for Hailo-8L..."
-wget -P hefs/h8l/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/base-whisper-encoder-5s_h8l.hef"
+wget -P hefs/h8l/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8l/base-whisper-encoder-5s_h8l.hef"
 
 
 

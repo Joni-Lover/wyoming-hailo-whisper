@@ -15,7 +15,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Build args
 ARG S6_OVERLAY_VERSION=3.2.1.0
-ARG BASHIO_VERSION=0.17.1
+ARG BASHIO_VERSION=0.17.5
 ARG TEMPIO_VERSION=2024.11.2
 
 # Base system
@@ -78,7 +78,7 @@ RUN apt-get update && apt-get install -y \
     wget \
     nano
 
-RUN dpkg --unpack hailo_packages/hailort_4.21.0_arm64.deb 
+RUN dpkg --unpack hailo_packages/hailort_4.21.0_arm64.deb
 
 RUN script/setup && script/package
 ENV PATH="/home/wyoming_hailo_whisper/.venv/bin:$PATH"
@@ -90,6 +90,9 @@ WORKDIR /home/wyoming_hailo_whisper/wyoming_hailo_whisper/app
 RUN ./download_resources.sh
 
 RUN chmod a+x /run.sh
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD bash -c ': > /dev/tcp/127.0.0.1/10600' || exit 1
 
 # S6-Overlay
 WORKDIR /

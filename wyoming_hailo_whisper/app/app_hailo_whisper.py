@@ -1,9 +1,7 @@
 """Main app for Hailo Whisper"""
 
-import time
 import argparse
 import os
-import sys
 from wyoming_hailo_whisper.app.hailo_whisper_pipeline import HailoWhisperPipeline
 from wyoming_hailo_whisper.common.audio_utils import load_audio
 from wyoming_hailo_whisper.common.preprocessing import preprocess, improve_input_audio
@@ -23,8 +21,8 @@ def get_args():
     """
     parser = argparse.ArgumentParser(description="Whisper Hailo Pipeline")
     parser.add_argument(
-        "--reuse-audio", 
-        action="store_true", 
+        "--reuse-audio",
+        action="store_true",
         help="Reuse the previous audio file (sampled_audio.wav)"
     )
     parser.add_argument(
@@ -42,9 +40,15 @@ def get_args():
         help="Whisper variant to use (default: base)"
     )
     parser.add_argument(
-        "--multi-process-service", 
-        action="store_true", 
+        "--multi-process-service",
+        action="store_true",
         help="Enable multi-process service to run other models in addition to Whisper"
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="en",
+        help="Language code for transcription (default: en)"
     )
     return parser.parse_args()
 
@@ -80,21 +84,17 @@ def main():
     # Get command line arguments
     args = get_args()
 
-    #encoder_path = get_encoder_hef_path(args.hw_arch)
-    #decoder_path = get_decoder_hef_path(args.hw_arch)
-    #variant = "tiny"  # only tiny model is available for now
-
     variant = args.variant
     print(f"Selected variant: Whisper {variant}")
     encoder_path = get_hef_path(variant, args.hw_arch, "encoder")
     decoder_path = get_hef_path(variant, args.hw_arch, "decoder")
 
-    whisper_hailo = HailoWhisperPipeline(encoder_path, decoder_path, variant, multi_process_service=args.multi_process_service)
+    whisper_hailo = HailoWhisperPipeline(encoder_path, decoder_path, variant, multi_process_service=args.multi_process_service, language=args.language)
     print("Hailo Whisper pipeline initialized.")
     audio_path = "sampled_audio.wav"
     is_nhwc = True
 
-    chunk_length = 10 if variant == "tiny" else 5
+    chunk_length = whisper_hailo.get_model_input_audio_length()
 
     while True:
         if args.reuse_audio:
@@ -113,9 +113,7 @@ def main():
         sampled_audio = load_audio(audio_path)
 
         sampled_audio, start_time = improve_input_audio(sampled_audio, vad=True)
-        chunk_offset = start_time - 0.2
-        if chunk_offset < 0:
-            chunk_offset = 0
+        chunk_offset = max((start_time or 0.0) - 0.2, 0.0)
 
         mel_spectrograms = preprocess(
             sampled_audio,
@@ -125,9 +123,7 @@ def main():
         )
 
         for mel in mel_spectrograms:
-            whisper_hailo.send_data(mel)
-            time.sleep(0.2)
-            transcription = clean_transcription(whisper_hailo.get_transcription())
+            transcription = clean_transcription(whisper_hailo.transcribe_mel(mel, language=args.language))
             print(f"\n{transcription}")
 
         if args.reuse_audio:

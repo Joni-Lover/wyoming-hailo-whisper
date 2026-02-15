@@ -9,7 +9,7 @@ _LOGGER = logging.getLogger(__name__)
 def preprocess(audio, is_nhwc=False, chunk_length = 10, chunk_offset=0, max_duration = 60, overlap=0.0):
     """
     Generate the mel spectrograms
-    
+
     Parameters:
     - audio: The audio sample.
     - chunk_length: Length in seconds of each audio chunk to process. This must match the input length of the model.
@@ -45,7 +45,7 @@ def preprocess(audio, is_nhwc=False, chunk_length = 10, chunk_offset=0, max_dura
 
         mel = np.expand_dims(mel, axis=0)  # Add new axis to match shape (1, 80, 1, 1000)
         #print(mel.shape)
-        mel = np.expand_dims(mel, axis=2) 
+        mel = np.expand_dims(mel, axis=2)
         #print(mel.shape)
 
         if is_nhwc:
@@ -75,12 +75,15 @@ def improve_input_audio(audio, vad=True, low_audio_gain = True):
     - vad: Boolean indicating whether to apply voice activity detection (VAD).
     - low_audio_gain: Boolean indicating whether to apply gain if the audio level is low.
     """
-    
-    # print(f"Max audio level: {np.max(audio)}")
-    if (low_audio_gain == True) and (np.max(audio) < 0.1):
-        if np.max(audio) < 0.1:
+
+    if len(audio) == 0:
+        return audio, 0.0
+
+    max_audio = float(np.max(np.abs(audio)))
+    if low_audio_gain and (max_audio < 0.1):
+        if max_audio < 0.1:
             audio = apply_gain(audio, gain_db=20)  # Increase by 15 dB
-        elif np.max(audio) < 0.2:
+        elif max_audio < 0.2:
             audio = apply_gain(audio, gain_db=10)  # Increase by 10 dB
         _LOGGER.info(f"New max audio level: {np.max(audio)}")
 
@@ -113,12 +116,16 @@ def detect_first_speech(audio_data, sample_rate, threshold=0.2, frame_duration=0
 
     # Calculate frame size in samples
     frame_size = int(frame_duration * sample_rate)
+    if frame_size <= 0 or len(audio_data) == 0:
+        return None
 
     # Split the audio into frames
     frames = [audio_data[i:i + frame_size] for i in range(0, len(audio_data), frame_size)]
 
     # Calculate the energy of each frame
     energy = [np.sum(np.abs(frame)**2) / len(frame) for frame in frames]
+    if not energy:
+        return None
 
     # Normalize energy to [0, 1]
     max_energy = max(energy)

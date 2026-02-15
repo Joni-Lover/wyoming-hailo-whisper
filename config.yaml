@@ -1,6 +1,6 @@
 name: "Wyoming Hailo Whisper"
 description: "Hailo Whisper model for HA addon"
-version: "0.0.2"
+version: "0.0.9"
 slug: "hailo_whisper_addon"
 init: false
 arch:
@@ -13,6 +13,8 @@ udev: true
 options:
   variant: base
   device: hailo8l
+  language: ru
 schema:
   variant: list(tiny|base)
   device: list(hailo8|hailo8l)
+  language: list(ru|en)

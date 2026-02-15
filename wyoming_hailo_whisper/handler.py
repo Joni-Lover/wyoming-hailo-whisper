@@ -1,10 +1,8 @@
 """Event handler for clients of the server."""
 import argparse
 import asyncio
-import io
 import logging
-import time
-import wave
+from typing import Optional
 
 import numpy as np
 from wyoming.asr import Transcribe, Transcript
@@ -16,6 +14,7 @@ from wyoming.server import AsyncEventHandler
 from wyoming_hailo_whisper.app.hailo_whisper_pipeline import HailoWhisperPipeline
 from wyoming_hailo_whisper.common.postprocessing import clean_transcription
 from wyoming_hailo_whisper.common.preprocessing import improve_input_audio, preprocess
+from wyoming_hailo_whisper.const import DEFAULT_LANGUAGE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,7 +29,6 @@ class HailoWhisperEventHandler(AsyncEventHandler):
         model: HailoWhisperPipeline,
         model_lock: asyncio.Lock,
         *args,
-        #initial_prompt: Optional[str] = None,
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
@@ -47,12 +45,41 @@ class HailoWhisperEventHandler(AsyncEventHandler):
             width=2,
             channels=1,
         )
-        self._language = self.cli_args.language or "en"
+
+        # Language management
+        self._language: Optional[str] = None
+        self._default_language = cli_args.language or DEFAULT_LANGUAGE
+
+        # Model loading state
+        self._model_load_task: Optional[asyncio.Task] = None
+        self._is_audio_receiving = False
 
     async def handle_event(self, event: Event) -> bool:
+        if Transcribe.is_type(event.type):
+            # Capture language BEFORE audio starts
+            transcribe = Transcribe.from_event(event)
+            self._language = transcribe.language or self._default_language
+            _LOGGER.debug("Language set to %s", self._language)
+
+            # Start loading model in background with the specified language
+            if self._model_load_task is None or self._model_load_task.done():
+                self._model_load_task = asyncio.create_task(
+                    self._load_model_for_language(self._language)
+                )
+                _LOGGER.debug("Background model loading started for language: %s", self._language)
+
+            return True
+
         if AudioChunk.is_type(event.type):
-            if not self.audio:
+            # Wait for model to be ready if it's still loading
+            if self._model_load_task is not None and not self._model_load_task.done():
+                if not self._is_audio_receiving:
+                    _LOGGER.debug("Waiting for model to load before processing audio...")
+                    await self._model_load_task
+
+            if not self._is_audio_receiving:
                 _LOGGER.debug("Receiving audio")
+                self._is_audio_receiving = True
 
             chunk = AudioChunk.from_event(event)
             chunk = self.audio_converter.convert(chunk)
@@ -62,66 +89,52 @@ class HailoWhisperEventHandler(AsyncEventHandler):
 
         if AudioStop.is_type(event.type):
             _LOGGER.debug("Audio stopped")
-            text = ""
-            with io.BytesIO() as wav_io:
-                wav_file: wave.Wave_write = wave.open(wav_io, "wb")
-                with wav_file:
-                    wav_file.setframerate(16000)
-                    wav_file.setsampwidth(2)
-                    wav_file.setnchannels(1)
-                    wav_file.writeframes(self.audio)
+            self._is_audio_receiving = False
 
-                wav_io.seek(0)
-                wav_bytes = wav_io.getvalue()
+            if not self.audio:
+                await self.write_event(Transcript(text="").event())
+                _LOGGER.debug("Completed empty request")
+                return False
 
-                sampled_audio = np.frombuffer(wav_bytes, dtype=np.int16).flatten().astype(np.float32) / 32768.0
-                sampled_audio, start_time = improve_input_audio(sampled_audio, vad=True)
+            sampled_audio = np.frombuffer(self.audio, dtype=np.int16).flatten().astype(np.float32) / 32768.0
+            sampled_audio, start_time = improve_input_audio(sampled_audio, vad=True)
 
-                chunk_offset = start_time - 0.2
-                if chunk_offset < 0:
-                    chunk_offset = 0
+            chunk_offset = max((start_time or 0.0) - 0.2, 0.0)
+            chunk_length = self.model.get_model_input_audio_length()
 
-                chunk_length = 10  if self.cli_args.variant == "tiny" else 5
+            mel_spectrograms = preprocess(
+                sampled_audio,
+                True,
+                chunk_length=chunk_length,
+                chunk_offset=chunk_offset,
+            )
 
-                mel_spectrograms = preprocess(
-                    sampled_audio,
-                    True,#self.is_nhwc,
-                    chunk_length=chunk_length,
-                    chunk_offset=chunk_offset
-                )
-                #assert self.model_proc.stdin is not None
-                #assert self.model_proc.stdout is not None
+            request_language = self._language or self._default_language
+            transcription = ""
+            async with self.model_lock:
+                _LOGGER.info("Processing mel spectrograms: %s", len(mel_spectrograms))
+                for mel in mel_spectrograms:
+                    _LOGGER.debug("Processing mel spectrogram shape: %s", mel.shape)
+                    raw_transcription = await asyncio.to_thread(
+                        self.model.transcribe_mel,
+                        mel,
+                        request_language,
+                    )
+                    _LOGGER.debug("Raw transcription: %s", raw_transcription)
+                    transcription += clean_transcription(raw_transcription)
 
-                async with self.model_lock:
-                    transcription = ""
-                    _LOGGER.info(f"Processing mel spectrograms: {len(mel_spectrograms)}")
-                    for mel in mel_spectrograms:
-                        _LOGGER.info(f"Processing mel spectrogram: {mel}")
-                        self.model.send_data(mel)
-                        time.sleep(0.2)
-                        raw_transcription = self.model.get_transcription()
-                        _LOGGER.info(raw_transcription)
-                        transcription += clean_transcription(raw_transcription)
-
-                text = transcription.replace("[BLANK_AUDIO]", "").strip()
-
-            _LOGGER.info(text)
+            text = transcription.replace("[BLANK_AUDIO]", "").strip()
+            _LOGGER.info("Completed transcription (len=%s, language=%s)", len(text), request_language)
 
             await self.write_event(Transcript(text=text).event())
             _LOGGER.debug("Completed request")
 
             # Reset
             self.audio = bytes()
-            self._language = self.cli_args.language
+            self._language = None
+            self._model_load_task = None
 
             return False
-
-        if Transcribe.is_type(event.type):
-            transcribe = Transcribe.from_event(event)
-            if transcribe.language:
-                self._language = transcribe.language
-                _LOGGER.debug("Language set to %s", transcribe.language)
-            return True
 
         if Describe.is_type(event.type):
             await self.write_event(self.wyoming_info_event)
@@ -129,3 +142,9 @@ class HailoWhisperEventHandler(AsyncEventHandler):
             return True
 
         return True
+
+    async def _load_model_for_language(self, language: str) -> None:
+        """Load/configure model for the specified language."""
+        _LOGGER.debug("Loading model for language: %s", language)
+        await asyncio.to_thread(self.model.prepare_language, language)
+        _LOGGER.debug("Model ready for language: %s", language)

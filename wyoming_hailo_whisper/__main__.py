@@ -2,14 +2,13 @@
 import argparse
 import asyncio
 import logging
-import platform
-import re
 from functools import partial
 import os
 from wyoming_hailo_whisper.app.hailo_whisper_pipeline import HailoWhisperPipeline
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncServer
 from wyoming_hailo_whisper.app.whisper_hef_registry import HEF_REGISTRY
+from wyoming_hailo_whisper.const import LANGUAGE_CODES, DEFAULT_LANGUAGE, DEFAULT_VARIANT
 
 from . import __version__
 from .handler import HailoWhisperEventHandler
@@ -55,18 +54,18 @@ async def main() -> None:
     parser.add_argument(
         "--variant",
         type=str,
-        default="base",
+        default=DEFAULT_VARIANT,
         choices=["base", "tiny"],
-        help="Whisper variant to use (default: base)"
+        help=f"Whisper variant to use (default: {DEFAULT_VARIANT})"
     )
     parser.add_argument(
         "--language",
-        default="en",
-        help="Default language to set for transcription",
+        default=DEFAULT_LANGUAGE,
+        help=f"Default language to set for transcription (default: {DEFAULT_LANGUAGE})",
     )
     parser.add_argument(
-        "--multi-process-service", 
-        action="store_true", 
+        "--multi-process-service",
+        action="store_true",
         help="Enable multi-process service to run other models in addition to Whisper"
     )
     parser.add_argument("--debug", action="store_true", help="Log DEBUG messages")
@@ -85,7 +84,6 @@ async def main() -> None:
     )
     _LOGGER.debug(args)
 
-    #args.language = "en"
     model_name = "whisper hailo model"
 
     wyoming_info = Info(
@@ -94,8 +92,8 @@ async def main() -> None:
                 name="hailo-whisper",
                 description="Hailo accelerated Whisper",
                 attribution=Attribution(
-                    name="mpeex",
-                    url="https://github.com/mpeex/wyoming-hailo-whisper",
+                    name="Joni-Lover",
+                    url="https://github.com/Joni-Lover/wyoming-hailo-whisper",
                 ),
                 installed=True,
                 version=__version__,
@@ -108,7 +106,7 @@ async def main() -> None:
                             url="https://hailo.ai",
                         ),
                         installed=True,
-                        languages=[args.language],
+                        languages=sorted(list(LANGUAGE_CODES.keys())),
                         version=__version__,
                     )
                 ],
@@ -116,30 +114,42 @@ async def main() -> None:
         ],
     )
 
-    # Load model
-    _LOGGER.debug("Loading %s", model_name)
-    encoder_path = get_hef_path(args.variant, args.device, "encoder")
-    decoder_path = get_hef_path(args.variant, args.device, "decoder")
+    whisper_model = None
+    try:
+        # Load model
+        _LOGGER.debug("Loading %s", model_name)
+        encoder_path = get_hef_path(args.variant, args.device, "encoder")
+        decoder_path = get_hef_path(args.variant, args.device, "decoder")
 
-    whisper_model = HailoWhisperPipeline(encoder_path, decoder_path, args.variant, multi_process_service=args.multi_process_service)
-    _LOGGER.info("Device %s", args.device)
-    _LOGGER.info("Encoder %s", encoder_path)
-    _LOGGER.info("Decoder %s", decoder_path)
-    _LOGGER.info("Language %s", args.language)
-    _LOGGER.info("Variant %s", args.variant)
-
-    server = AsyncServer.from_uri(args.uri)
-    _LOGGER.info("Ready")
-    model_lock = asyncio.Lock()
-    await server.run(
-        partial(
-            HailoWhisperEventHandler,
-            wyoming_info,
-            args,
-            whisper_model,
-            model_lock,
+        whisper_model = HailoWhisperPipeline(
+            encoder_path,
+            decoder_path,
+            args.variant,
+            multi_process_service=args.multi_process_service,
+            language=args.language or "en",
         )
-    )
+        _LOGGER.info("Device %s", args.device)
+        _LOGGER.info("Encoder %s", encoder_path)
+        _LOGGER.info("Decoder %s", decoder_path)
+        _LOGGER.info("Language %s", args.language)
+        _LOGGER.info("Variant %s", args.variant)
+
+        server = AsyncServer.from_uri(args.uri)
+        _LOGGER.info("Ready")
+        model_lock = asyncio.Lock()
+        await server.run(
+            partial(
+                HailoWhisperEventHandler,
+                wyoming_info,
+                args,
+                whisper_model,
+                model_lock,
+            )
+        )
+    finally:
+        if whisper_model is not None:
+            _LOGGER.info("Stopping Hailo Whisper pipeline")
+            await asyncio.to_thread(whisper_model.stop)
 
 
 # -----------------------------------------------------------------------------
