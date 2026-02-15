@@ -17,4 +17,4 @@ options:
 schema:
   variant: list(tiny|base)
   device: list(hailo8|hailo8l)
-  language: list(en|ru|es|fr|de|it|pt|zh|ja|ko|ar|hi|uk|cs|pl|tr|nl|sv|vi|th)
+  language: select(en|ru|es|fr|de|it|pt|zh|ja|ko|ar|hi|uk|cs|pl|tr|nl|sv|vi|th)
