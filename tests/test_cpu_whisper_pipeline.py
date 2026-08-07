@@ -45,3 +45,23 @@ def test_transcribe_audio_accepts_empty_input():
 
     assert pipeline._transcribe_audio([], language="en") == ""
     pipeline.processor.assert_not_called()
+
+
+def test_transcribe_audio_builds_prompt_with_whisper_prompt_api():
+    pipeline = _pipeline_without_model_load()
+    prompt_ids = MagicMock(name="prompt_ids")
+    prompt_ids.__len__.return_value = 4
+    pipeline.processor.get_prompt_ids.return_value = prompt_ids
+
+    pipeline._transcribe_audio(
+        np.zeros(16000, dtype=np.float32),
+        language="pl",
+        initial_prompt="PandaDoc Wyoming",
+    )
+
+    pipeline.processor.get_prompt_ids.assert_called_once_with(
+        "PandaDoc Wyoming",
+        return_tensors="pt",
+    )
+    assert pipeline.model.generate.call_args.kwargs["prompt_ids"] is prompt_ids
+    pipeline.processor.tokenizer.encode.assert_not_called()

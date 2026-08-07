@@ -98,12 +98,11 @@ class CpuWhisperPipeline:
             )
 
             if initial_prompt:
-                prompt_token_ids = self.processor.tokenizer.encode(
-                    initial_prompt, add_special_tokens=False
+                prompt_token_ids = self.processor.get_prompt_ids(
+                    initial_prompt,
+                    return_tensors="pt",
                 )
-                generate_kwargs["prompt_ids"] = torch.tensor(
-                    prompt_token_ids, dtype=torch.long
-                )
+                generate_kwargs["prompt_ids"] = prompt_token_ids
                 _LOGGER.debug("CPU prompt_ids: %d tokens", len(prompt_token_ids))
 
             with torch.no_grad():

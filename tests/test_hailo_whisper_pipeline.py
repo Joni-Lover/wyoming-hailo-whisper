@@ -66,6 +66,21 @@ def test_failure_sentinel_unblocks_waiting_caller():
         pipeline.get_transcription(timeout_sec=0.01)
 
 
+def test_request_failure_is_raised_without_poisoning_worker():
+    pipeline = _pipeline_without_hardware()
+    failure = ValueError("decoder buffer rejected")
+    pipeline.results_queue.put(failure)
+
+    with pytest.raises(ValueError, match="decoder buffer rejected") as exc_info:
+        pipeline.get_transcription(timeout_sec=0.01)
+
+    assert exc_info.value is failure
+    assert pipeline._error is None
+
+    pipeline.results_queue.put("next request succeeded")
+    assert pipeline.get_transcription(timeout_sec=0.01) == "next request succeeded"
+
+
 def test_default_transcription_timeout_is_finite():
     pipeline = _pipeline_without_hardware()
     pipeline.results_queue = MagicMock()

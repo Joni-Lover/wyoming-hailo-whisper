@@ -162,6 +162,11 @@ def temperature_sampling(logits, temperature=0.0):
 
 
 def clean_transcription(transcription):
+    # An empty decoder result is valid for silence (immediate EOT). Preserve it
+    # instead of turning it into punctuation that looks like a transcription.
+    if not transcription or not transcription.strip():
+        return ""
+
     # Split the transcription into sentences using both '.' and '?' as delimiters
     sentences = re.split(r'(?<=[.?])\s+', transcription)
     

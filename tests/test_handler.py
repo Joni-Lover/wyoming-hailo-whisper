@@ -257,6 +257,22 @@ class TestHailoWhisperEventHandler:
         assert result == ""
         mock_model.send_data.assert_not_called()
 
+    def test_hailo_empty_chunks_do_not_become_periods(self, handler, mock_model):
+        mock_model.get_transcription.side_effect = ["Hello", "", "   "]
+        mel_chunks = [np.zeros((1, 1, 3000, 80)) for _ in range(3)]
+
+        with patch(
+            "wyoming_hailo_whisper.handler.preprocess",
+            return_value=mel_chunks,
+        ):
+            result = handler._transcribe_hailo(
+                np.zeros(16000, dtype=np.float32),
+                chunk_offset=0.0,
+            )
+
+        assert result == "Hello."
+        assert mock_model.get_transcription.call_count == 3
+
     @pytest.mark.asyncio
     async def test_cleans_transcription_output(self, handler, mock_model):
         """

@@ -365,10 +365,10 @@ class TestCleanTranscription:
     def test_empty_transcription(self):
         """Shows handling of edge case: empty or whitespace-only input."""
         result = postprocessing.clean_transcription("")
-        assert result == "."
+        assert result == ""
 
         result = postprocessing.clean_transcription("   ")
-        assert result == "."
+        assert result == ""
 
 
 class TestPostprocessingIntegration:

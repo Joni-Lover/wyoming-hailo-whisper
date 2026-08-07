@@ -391,9 +391,14 @@ class HailoWhisperPipeline:
                             )
                             _LOGGER.debug("Transcription: '%s'", transcription)
                             self.results_queue.put(transcription)
-                        except Exception:
+                        except Exception as err:
                             _LOGGER.exception("Error during inference")
-                            self.results_queue.put("")
+                            # Keep request failures distinct from valid empty
+                            # transcriptions (for example, immediate EOT on a
+                            # silent chunk). The worker can continue serving
+                            # later requests while this caller receives the
+                            # actual inference error.
+                            self.results_queue.put(err)
 
     def get_model_input_audio_length(self):
         """
@@ -439,6 +444,8 @@ class HailoWhisperPipeline:
         if result is _INFERENCE_FAILED:
             self._raise_if_failed()
             raise RuntimeError("Hailo inference worker stopped unexpectedly")
+        if isinstance(result, Exception):
+            raise result
         return result
 
     def transcribe_mel(
