@@ -21,3 +21,4 @@ hailo_packages/*
 note
 Dockerfile_old
 
+/hailo-packages

@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
-#source /home/wyoming_hailo_whisper/.venv/bin/activate
-python3 -m wyoming_hailo_whisper \
-    --uri 'tcp://0.0.0.0:10600' \
-    --device 'hailo8l' \
-    --variant 'tiny'
+
+ARGS=(
+    --uri "${WHISPER_URI:-tcp://0.0.0.0:10600}"
+    --device "${WHISPER_DEVICE:-hailo8l}"
+    --variant "${WHISPER_VARIANT:-base}"
+    --language "${WHISPER_LANGUAGE:-en}"
+    --beam-size "${WHISPER_BEAM_SIZE:-5}"
+)
+
+if [ "${WHISPER_USE_CPU:-false}" = "true" ]; then
+    ARGS+=(--use-cpu)
+fi
+
+if [ "${WHISPER_ENHANCE_AUDIO:-false}" = "true" ]; then
+    ARGS+=(--enhance-audio)
+fi
+
+if [ -n "${WHISPER_INITIAL_PROMPT:-}" ]; then
+    ARGS+=(--initial-prompt "${WHISPER_INITIAL_PROMPT}")
+fi
+
+if [ -n "${WHISPER_HAILO_INITIAL_PROMPT:-}" ]; then
+    ARGS+=(--hailo-initial-prompt "${WHISPER_HAILO_INITIAL_PROMPT}")
+fi
+
+if [ "${WHISPER_DEBUG:-false}" = "true" ]; then
+    ARGS+=(--debug)
+fi
+
+exec python3 -m wyoming_hailo_whisper "${ARGS[@]}"

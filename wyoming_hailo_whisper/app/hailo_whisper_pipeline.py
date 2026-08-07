@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import os
 from hailo_platform import (HEF, VDevice, HailoSchedulingAlgorithm, FormatType)
@@ -5,7 +6,9 @@ from transformers import AutoTokenizer
 from queue import Queue, Empty
 from threading import Thread
 from typing import Optional
-from wyoming_hailo_whisper.common.postprocessing import apply_repetition_penalty
+from wyoming_hailo_whisper.common.postprocessing import apply_repetition_penalty, suppress_special_tokens, WHISPER_EOT_TOKEN
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class HailoWhisperPipeline:
@@ -13,42 +16,50 @@ class HailoWhisperPipeline:
     A pipeline for running inference using Hailo's Whisper models.
     """
 
-    def __init__(self, encoder_model_path: str, decoder_model_path: str, variant, host="arm64", multi_process_service=False, language="en"):
+    def __init__(
+        self,
+        encoder_model_path: str,
+        decoder_model_path: str,
+        variant,
+        host="arm64",
+        multi_process_service=False,
+        beam_size=1,
+        language="en",
+    ):
         """
         Initialize the pipeline.
 
         :param encoder_model_path: Path to the encoder model file.
         :param decoder_model_path: Path to the decoder model file.
         :param variant: Model variant (e.g., "tiny").
-        :param language: Language code (e.g., "en", "ru").
         """
         self.encoder_model_path = encoder_model_path
         self.decoder_model_path = decoder_model_path
         self.timeout_ms = 100000000
         self.variant = variant
-        self.language = language
-        self.result_timeout_sec = 15
+        self.language = language or "en"
 
-        self.decoding_sequence_length = None
-        self.input_audio_length = None
+        self.decoding_sequence_length = None  # set automatically based on HEF details
         self.host = host  # not used in this version
         self.multi_process_service = multi_process_service
+        self.beam_size = max(1, int(beam_size))
 
-        # Token embedding
-        self.token_embedding_weight = self._load_token_embedding_weight()
-        self.onnx_add_input = self._load_onnx_add_input()
+        # Token embedding (ensure float32 for Hailo compatibility)
+        self.token_embedding_weight = self._load_token_embedding_weight().astype(np.float32)
+        self.onnx_add_input = self._load_onnx_add_input().astype(np.float32)
 
         self.constant_output_0 = np.array([1])  # Unsqueeze axis
+        _LOGGER.info("Token embedding weight shape: %s", self.token_embedding_weight.shape)
+        _LOGGER.info("ONNX add input shape: %s", self.onnx_add_input.shape)
         self._load_tokenizer()
 
-        encoder_hef = HEF(self.encoder_model_path)
-        self.input_audio_length = int(encoder_hef.get_input_vstream_infos()[0].shape[1] / 100)
+        encoder_hef = HEF(self.encoder_model_path)  # load HEF to get input length
+        self.input_audio_length = int((encoder_hef.get_input_vstream_infos()[0].shape[1]) / 100)  # in seconds
 
         self.data_queue = Queue()
         self.results_queue = Queue()
         self.running = True
-        self._error: Optional[Exception] = None
-        self.thread = Thread(target=self._inference_loop)
+        self.thread = Thread(target=self._inference_loop, daemon=True)
         self.thread.start()
 
     def _load_token_embedding_weight(self):
@@ -74,49 +85,69 @@ class HailoWhisperPipeline:
         Load the tokenizer for the specified variant.
         """
         self.tokenizer = AutoTokenizer.from_pretrained(f"openai/whisper-{self.variant}")
-        self.startoftranscript_token_id = self.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        self.startoftranscript_token_id = self.tokenizer.convert_tokens_to_ids(
+            "<|startoftranscript|>"
+        )
         self.transcribe_token_id = self.tokenizer.convert_tokens_to_ids("<|transcribe|>")
-        self.notimestamps_token_id = self.tokenizer.convert_tokens_to_ids("<|notimestamps|>")
+        self.notimestamps_token_id = self.tokenizer.convert_tokens_to_ids(
+            "<|notimestamps|>"
+        )
+        self.startofprev_token_id = self.tokenizer.convert_tokens_to_ids("<|startofprev|>")
         self._language_token_cache = {}
 
     def _get_language_token(self, language: Optional[str]) -> int:
-        lang = (language or self.language or "en").strip().lower()
-        cached = self._language_token_cache.get(lang)
-        if cached is not None:
-            return cached
+        """Resolve and cache a Whisper language token with a safe fallback."""
+        language = (language or self.language).strip().lower()
+        if language in self._language_token_cache:
+            return self._language_token_cache[language]
 
-        token_id = self.tokenizer.convert_tokens_to_ids(f"<|{lang}|>")
+        token_id = self.tokenizer.convert_tokens_to_ids(f"<|{language}|>")
         if token_id is None or token_id == self.tokenizer.unk_token_id:
-            token_id = self.tokenizer.convert_tokens_to_ids(f"<|{self.language}|>")
+            _LOGGER.warning(
+                "Unknown language '%s', falling back to '%s'",
+                language,
+                self.language,
+            )
+            language = self.language
+            token_id = self.tokenizer.convert_tokens_to_ids(f"<|{language}|>")
 
-        self._language_token_cache[lang] = token_id
+        self._language_token_cache[language] = token_id
         return token_id
 
     def prepare_language(self, language: Optional[str]) -> None:
+        """Compatibility hook used by older callers to warm the token cache."""
         self._get_language_token(language)
 
-    def _tokenization(self, decoder_input_ids):
+    def _tokenization(self, decoder_input_ids, add_embed=True):
         """
         Perform tokenization operations.
 
         :param decoder_input_ids: Input token IDs for the decoder.
-        :return: Transposed tokenized output.
+        :param add_embed: Whether to add positional embedding bias.
+        :return: Contiguous float32 array ready for Hailo set_buffer.
         """
         # embedding lookup
-        gather_output = self.token_embedding_weight[decoder_input_ids]  # Shape: (len(decoder_input_ids), 384)
-        # Add bias
-        add_output = gather_output + self.onnx_add_input  # Broadcasting with shape (32, 384)
-        # insert dimension at axis=1
-        unsqueeze_output = np.expand_dims(add_output, axis=int(self.constant_output_0[0]))  # Shape: (32, 1, 384)
-        # Transpose (0, 3, 2, 1) + turn into NHWC (0, 2, 3, 1)
-        transpose_output = np.transpose(unsqueeze_output, (0, 2, 1, 3))
+        gather_output = self.token_embedding_weight[decoder_input_ids]
 
-        return transpose_output
+        if add_embed:
+            add_output = gather_output + self.onnx_add_input
+            unsqueeze_output = np.expand_dims(add_output, axis=int(self.constant_output_0[0]))
+            transpose_output = np.transpose(unsqueeze_output, (0, 2, 1, 3))
+            return np.ascontiguousarray(transpose_output, dtype=np.float32)
+        else:
+            unsqueeze_output = np.expand_dims(gather_output, axis=0)
+            return np.ascontiguousarray(unsqueeze_output, dtype=np.float32)
 
     def _inference_loop(self):
         """
         Main inference loop for processing input data and generating transcriptions.
         """
+        try:
+            self._run_inference()
+        except Exception:
+            _LOGGER.exception("Inference loop crashed")
+
+    def _run_inference(self):
         params = VDevice.create_params()
         params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
 
@@ -129,6 +160,9 @@ class HailoWhisperPipeline:
         sorted_output_names = decoder_hef.get_sorted_output_names()
         decoder_model_name = decoder_hef.get_network_group_names()[0]
         self.decoding_sequence_length = decoder_hef.get_output_vstream_infos()[0].shape[1]
+        _LOGGER.info("Decoder sequence length: %d", self.decoding_sequence_length)
+        _LOGGER.info("Encoder input audio length: %ds", self.input_audio_length)
+        _LOGGER.info("Decoder output names: %s", sorted_output_names)
 
         with VDevice(params) as vdevice:
             encoder_infer_model = vdevice.create_infer_model(self.encoder_model_path)
@@ -142,9 +176,21 @@ class HailoWhisperPipeline:
             for output_name in sorted_output_names:
                 decoder_infer_model.output(output_name).set_format_type(FormatType.FLOAT32)
 
-            useful_output_names = [name for name in sorted_output_names if "conv" in name]
-            if not useful_output_names:
-                useful_output_names = sorted_output_names
+            useful_outputs = []
+            for output_name in sorted_output_names:
+                if "conv" in output_name:
+                    useful_outputs.append(output_name)
+            if not useful_outputs:
+                _LOGGER.warning("No 'conv' outputs found, using all outputs: %s", sorted_output_names)
+                useful_outputs = sorted_output_names
+            _LOGGER.info("Useful (conv) outputs: %s", useful_outputs)
+
+            _LOGGER.info("Encoder input shape: %s", encoder_infer_model.input().shape)
+            _LOGGER.info("Encoder output shape: %s", encoder_infer_model.output().shape)
+            _LOGGER.info("Decoder input_layer1 shape: %s", decoder_infer_model.input(f"{decoder_model_name}/input_layer1").shape)
+            _LOGGER.info("Decoder input_layer2 shape: %s", decoder_infer_model.input(f"{decoder_model_name}/input_layer2").shape)
+            for oname in sorted_output_names:
+                _LOGGER.info("Decoder output '%s' shape: %s", oname, decoder_infer_model.output(oname).shape)
 
             with encoder_infer_model.configure() as encoder_configured_infer_model:
                 with decoder_infer_model.configure() as decoder_configured_infer_model:
@@ -154,100 +200,164 @@ class HailoWhisperPipeline:
                     while self.running:
                         try:
                             # Wait for new data with a timeout to allow clean exit
-                            request = self.data_queue.get(timeout=1)
-                            input_mel = request["mel"]
-                            request_language = request.get("language")
+                            input_mel, language, initial_prompt = self.data_queue.get(timeout=1)
+                        except Empty:
+                            continue
 
-                            input_mel = np.ascontiguousarray(input_mel)
+                        try:
+                            input_mel = np.ascontiguousarray(input_mel, dtype=np.float32)
+                            _LOGGER.info("Input mel shape: %s", input_mel.shape)
                             encoder_bindings.input().set_buffer(input_mel)
                             buffer = np.zeros(encoder_infer_model.output().shape).astype(np.float32)
                             encoder_bindings.output().set_buffer(buffer)
 
                             encoder_configured_infer_model.run([encoder_bindings], self.timeout_ms)
                             encoded_features = encoder_bindings.output().get_buffer()
+                            _LOGGER.info("Encoded features shape: %s", encoded_features.shape)
+                            _LOGGER.info("Encoded features stats: min=%.6f, max=%.6f, mean=%.6f, std=%.6f",
+                                         encoded_features.min(), encoded_features.max(),
+                                         encoded_features.mean(), encoded_features.std())
 
-                            language_token = self._get_language_token(request_language)
-                            prefix_tokens = [
-                                self.startoftranscript_token_id,
-                                language_token,
-                                self.transcribe_token_id,
-                                self.notimestamps_token_id,
-                            ]
-                            decoder_input_ids = np.zeros((1, self.decoding_sequence_length), dtype=np.int64)
-                            decoder_input_ids[0, :len(prefix_tokens)] = np.array(prefix_tokens, dtype=np.int64)
+                            # Build forced Whisper prefix: SOT, language, transcribe, notimestamps
+                            language = language or self.language
+                            sot_token = self.startoftranscript_token_id
+                            language_token = self._get_language_token(language)
+                            transcribe_token = self.transcribe_token_id
+                            notimestamps_token = self.notimestamps_token_id
 
-                            generated_tokens = []
-                            # Run Decoder Iteratively
-                            start_idx = len(prefix_tokens) - 1
-                            for i in range(start_idx, self.decoding_sequence_length - 1):
-                                tokenized_ids = self._tokenization(decoder_input_ids)
+                            control_suffix = [sot_token, language_token, transcribe_token, notimestamps_token]
+                            prefix = list(control_suffix)
 
-                                decoder_bindings.input(f"{decoder_model_name}/input_layer1").set_buffer(encoded_features)
-                                decoder_bindings.input(f"{decoder_model_name}/input_layer2").set_buffer(tokenized_ids)
-
-                                buffers = [
-                                    np.zeros(decoder_infer_model.output(name).shape).astype(np.float32) for name in sorted_output_names
-                                ]
-
-                                for name, buffer in zip(sorted_output_names, buffers):
-                                    decoder_bindings.output(name).set_buffer(buffer)
-
-                                decoder_configured_infer_model.run([decoder_bindings], self.timeout_ms)  # run decoder
-
-                                decoder_outputs = np.concatenate(
-                                    [decoder_bindings.output(name).get_buffer() for name in useful_output_names], axis=2
+                            if initial_prompt:
+                                startofprev_token = self.startofprev_token_id
+                                prompt_token_ids = self.tokenizer.encode(
+                                    initial_prompt, add_special_tokens=False
                                 )
+                                # Reserve minimum output slots; use the rest for prompt context
+                                min_output_tokens = 6
+                                # Total budget: decoding_sequence_length - min_output_tokens
+                                # Prefix overhead: 1 (startofprev) + 4 (sot/lang/transcribe/notimestamps)
+                                max_prompt_tokens = self.decoding_sequence_length - min_output_tokens - len(prefix) - 1
+                                if max_prompt_tokens < 1:
+                                    _LOGGER.warning("Sequence length %d too short for prompt, skipping",
+                                                    self.decoding_sequence_length)
+                                    prompt_token_ids = []
+                                elif len(prompt_token_ids) > max_prompt_tokens:
+                                    _LOGGER.info(
+                                        "Truncating initial prompt from %d to last %d tokens",
+                                        len(prompt_token_ids), max_prompt_tokens,
+                                    )
+                                    prompt_token_ids = prompt_token_ids[-max_prompt_tokens:]
+                                if prompt_token_ids:
+                                    prefix = [startofprev_token] + prompt_token_ids + prefix
+                                    _LOGGER.info("Prompt prefix: %d prompt tokens + 4 control tokens", len(prompt_token_ids))
 
-                                # Decoder post-processing
-                                repetition_penalty = 1.5
-                                logits = apply_repetition_penalty(decoder_outputs[:, i], generated_tokens, penalty=repetition_penalty)
-                                next_token = np.argmax(logits)
+                            _LOGGER.info("Forced prefix: %s (language=%s)", prefix, language)
 
-                                generated_tokens.append(next_token)
-                                decoder_input_ids[0][i + 1] = np.array([[next_token]], dtype=np.int64)
+                            # Helper: run one decoder step and return raw logits at position
+                            def run_decoder_step(beam_ids, pos):
+                                tok_emb = self._tokenization(beam_ids, add_embed=True)
+                                decoder_bindings.input(f"{decoder_model_name}/input_layer1").set_buffer(encoded_features)
+                                decoder_bindings.input(f"{decoder_model_name}/input_layer2").set_buffer(tok_emb)
+                                bufs = [np.zeros(decoder_infer_model.output(n).shape, dtype=np.float32) for n in sorted_output_names]
+                                for n, b in zip(sorted_output_names, bufs):
+                                    decoder_bindings.output(n).set_buffer(b)
+                                decoder_configured_infer_model.run([decoder_bindings], self.timeout_ms)
+                                return np.concatenate(
+                                    [decoder_bindings.output(n).get_buffer() for n in useful_outputs], axis=2
+                                )[:, pos]
 
-                                if next_token == self.tokenizer.eos_token_id:
+                            beam_size = self.beam_size
+                            length_penalty_alpha = 0.6
+                            first_decode_pos = len(prefix) - 1
+
+                            # Initialize beams
+                            initial_ids = np.zeros((1, self.decoding_sequence_length), dtype=np.int64)
+                            for j, tok in enumerate(prefix):
+                                initial_ids[0][j] = tok
+
+                            active_beams = [{
+                                'ids': initial_ids,
+                                'tokens': list(control_suffix[1:]),
+                                'content': [],
+                                'score': 0.0,
+                            }]
+                            finished_beams = []
+                            _LOGGER.info("Decoding with beam_size=%d", beam_size)
+
+                            # Beam search decoding loop
+                            for i in range(first_decode_pos, self.decoding_sequence_length - 1):
+                                all_candidates = []
+
+                                for beam in active_beams:
+                                    raw_logits = run_decoder_step(beam['ids'], i)
+
+                                    content_count = i - first_decode_pos
+                                    logits = apply_repetition_penalty(raw_logits, beam['content'], penalty=1.5)
+                                    logits = suppress_special_tokens(logits, allow_eot=content_count >= 1)
+
+                                    # Log softmax for beam scoring
+                                    max_l = np.max(logits)
+                                    log_probs = logits - max_l - np.log(np.sum(np.exp(logits - max_l)))
+
+                                    # Top candidates per beam
+                                    top_k = min(beam_size * 2, log_probs.shape[-1])
+                                    top_indices = np.argsort(log_probs)[-top_k:][::-1]
+
+                                    if i == first_decode_pos and beam is active_beams[0]:
+                                        top5 = top_indices[:5]
+                                        top5_tokens = [self.tokenizer.decode([idx]) for idx in top5]
+                                        _LOGGER.info("Step %d: top5=%s ids=%s scores=%.2f..%.2f",
+                                                     i, top5_tokens, top5.tolist(),
+                                                     float(log_probs[top5[0]]), float(log_probs[top5[-1]]))
+
+                                    for idx_np in top_indices:
+                                        idx = int(idx_np)
+                                        new_ids = beam['ids'].copy()
+                                        new_ids[0][i + 1] = idx
+                                        new_beam = {
+                                            'ids': new_ids,
+                                            'tokens': beam['tokens'] + [idx],
+                                            'content': beam['content'] + [idx],
+                                            'score': beam['score'] + float(log_probs[idx]),
+                                        }
+                                        if idx == WHISPER_EOT_TOKEN:
+                                            finished_beams.append(new_beam)
+                                        else:
+                                            all_candidates.append(new_beam)
+
+                                # Keep top beam_size active beams by score
+                                all_candidates.sort(key=lambda b: b['score'], reverse=True)
+                                active_beams = all_candidates[:beam_size]
+
+                                if not active_beams:
                                     break
 
-                            # Convert token IDs to text
+                                # Early stop if enough finished beams collected
+                                if len(finished_beams) >= beam_size:
+                                    break
+
+                            # Select best beam with length-normalized score
+                            all_beams = finished_beams + active_beams
+                            def beam_score(b):
+                                length = max(len(b['content']), 1)
+                                return b['score'] / (length ** length_penalty_alpha)
+
+                            best = max(all_beams, key=beam_score)
+                            generated_tokens = best['tokens']
+
+                            _LOGGER.info("Beam search: %d finished, %d active, best_score=%.2f, length=%d",
+                                         len(finished_beams), len(active_beams),
+                                         beam_score(best), len(best['content']))
+                            _LOGGER.info("Generated tokens: %s", generated_tokens)
                             transcription = self.tokenizer.decode(
                                 generated_tokens, skip_special_tokens=True
                             )
-                            self.results_queue.put({"text": transcription, "error": None})
-                        except Empty:
-                            pass  # No data yet, continue looping
-                        except Exception as err:
-                            self._error = err
-                            self.results_queue.put({"text": "", "error": err})
-
-    def send_data(self, data, language: Optional[str] = None):
-        """
-        Send new data to the queue.
-
-        :param data: Input data to process.
-        """
-        self.data_queue.put({"mel": data, "language": language})
-
-    def get_transcription(self, timeout_sec: Optional[float] = None):
-        """
-        Retrieve the next transcription result.
-
-        :return: Transcription result.
-        """
-        timeout = self.result_timeout_sec if timeout_sec is None else timeout_sec
-        try:
-            result = self.results_queue.get(timeout=timeout)
-        except Empty as err:
-            raise TimeoutError(f"Timed out waiting for transcription after {timeout} seconds") from err
-
-        if result.get("error") is not None:
-            raise RuntimeError("Inference loop failed") from result["error"]
-
-        return result.get("text", "")
-
-    def transcribe_mel(self, mel, language: Optional[str] = None, timeout_sec: Optional[float] = None):
-        self.send_data(mel, language=language)
-        return self.get_transcription(timeout_sec=timeout_sec)
+                            _LOGGER.info("Transcription: '%s'", transcription)
+                            self.results_queue.put(transcription)
+                        except Exception:
+                            _LOGGER.exception("Error during inference")
+                            self.results_queue.put("")
 
     def get_model_input_audio_length(self):
         """
@@ -257,10 +367,45 @@ class HailoWhisperPipeline:
         """
         return self.input_audio_length
 
+    def send_data(self, data, language=None, initial_prompt=""):
+        """
+        Send new data to the queue.
+
+        :param data: Input data to process.
+        :param language: Language code for transcription (e.g., "en", "sv").
+        :param initial_prompt: Optional text to condition the decoder.
+        """
+        self.data_queue.put((data, language or self.language, initial_prompt))
+
+    def get_transcription(self, timeout_sec: Optional[float] = None):
+        """
+        Retrieve the next transcription result.
+
+        :return: Transcription result.
+        """
+        if timeout_sec is None:
+            return self.results_queue.get()
+        try:
+            return self.results_queue.get(timeout=timeout_sec)
+        except Empty as err:
+            raise TimeoutError(
+                f"Timed out waiting for transcription after {timeout_sec} seconds"
+            ) from err
+
+    def transcribe_mel(
+        self,
+        mel,
+        language: Optional[str] = None,
+        timeout_sec: Optional[float] = None,
+        initial_prompt: str = "",
+    ):
+        """Compatibility wrapper for the original synchronous API."""
+        self.send_data(mel, language=language, initial_prompt=initial_prompt)
+        return self.get_transcription(timeout_sec=timeout_sec)
+
     def stop(self):
         """
         Stop the processing loop.
         """
         self.running = False
-        self.thread.join()
-
+        self.thread.join(timeout=5)

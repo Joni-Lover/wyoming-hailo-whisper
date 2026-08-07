@@ -28,8 +28,10 @@ LANGUAGE_CODES = {
     "th": "Thai",
 }
 
-# Model variants
-VARIANTS = ["tiny", "base"]
+# Model variants. Keep VARIANTS as the legacy Hailo-only public constant.
+HAILO_VARIANTS = ["tiny", "base"]
+CPU_VARIANTS = ["tiny", "base", "small", "medium", "large-v3"]
+VARIANTS = HAILO_VARIANTS
 
 # Default settings
 DEFAULT_VARIANT = "base"

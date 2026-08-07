@@ -6,25 +6,79 @@ import re
 
 excluded_tokens = [11, 13]  # Punctuation tokens to exclude from repetition penalty
 
-def apply_repetition_penalty(logits, generated_tokens, penalty=1.5, last_window=8):
+# All Whisper special tokens start at this ID
+WHISPER_SPECIAL_TOKEN_START = 50257
+WHISPER_EOT_TOKEN = 50257
+
+
+def apply_repetition_penalty(logits, generated_tokens, penalty=1.5, last_window=16):
     """
-    Apply repetition penalty to the logits.
-    Args:
-        logits: The logits from the model (shape: (vocab_size,)).
-        generated_tokens: List of previously generated tokens.
-        penalty: The penalty factor (higher values discourage repetitions).
-    Returns:
-        logits: The logits with repetition penalty applied.
+    Apply frequency-scaled repetition penalty to the logits.
+
+    Tokens that appear multiple times in the recent window get exponentially
+    stronger penalties (penalty^count). Tokens repeated 3+ consecutive times
+    and tokens forming repeated bigrams are suppressed entirely.
     """
-    logits = np.squeeze(logits, axis=0)
+    from collections import Counter
+
+    # Decoding helpers must not mutate the model output or another beam's view.
+    logits = np.squeeze(logits, axis=0).copy()
     recent_tokens = generated_tokens[-last_window:] if len(generated_tokens) >= last_window else generated_tokens
 
-    # Combine the tokens from both windows
-    recent_tokens = set(recent_tokens)
+    # Count occurrences for frequency-scaled penalty
+    token_counts = Counter(recent_tokens)
 
-    for token in recent_tokens:
-        if token not in excluded_tokens:
-            logits[token] /= penalty
+    for token, count in token_counts.items():
+        if token not in excluded_tokens and token < WHISPER_SPECIAL_TOKEN_START:
+            logits[token] /= penalty ** count
+
+    # Suppress tokens repeated more than 3 consecutive times
+    if len(generated_tokens) >= 3:
+        last_three = generated_tokens[-3:]
+        if (
+            last_three[0] == last_three[1] == last_three[2]
+            and last_three[0] not in excluded_tokens
+        ):
+            logits[last_three[0]] = -np.inf
+
+    # N-gram blocking: suppress tokens that would form a repeated bigram or trigram
+    if len(generated_tokens) >= 2:
+        # Bigram blocking: if (prev_token, candidate) already appeared 2+ times, suppress candidate
+        prev_token = generated_tokens[-1]
+        bigram_counts = Counter()
+        for j in range(len(generated_tokens) - 1):
+            bigram_counts[(generated_tokens[j], generated_tokens[j + 1])] += 1
+        for token_id in range(min(len(logits), WHISPER_SPECIAL_TOKEN_START)):
+            if (
+                token_id not in excluded_tokens
+                and bigram_counts.get((prev_token, token_id), 0) >= 2
+            ):
+                logits[token_id] = -np.inf
+
+    if len(generated_tokens) >= 4:
+        # Trigram blocking: if (t-2, t-1, candidate) already appeared, suppress candidate
+        t_minus_2 = generated_tokens[-2]
+        t_minus_1 = generated_tokens[-1]
+        trigram_set = set()
+        for j in range(len(generated_tokens) - 2):
+            trigram_set.add((generated_tokens[j], generated_tokens[j + 1], generated_tokens[j + 2]))
+        for token_id in range(min(len(logits), WHISPER_SPECIAL_TOKEN_START)):
+            if (
+                token_id not in excluded_tokens
+                and (t_minus_2, t_minus_1, token_id) in trigram_set
+            ):
+                logits[token_id] = -np.inf
+
+    return logits
+
+
+def suppress_special_tokens(logits, allow_eot=True):
+    """
+    Suppress all special tokens during content generation.
+    Optionally allows EOT to remain unsuppressed.
+    """
+    start = WHISPER_EOT_TOKEN + 1 if allow_eot else WHISPER_EOT_TOKEN
+    logits[start:] = -np.inf
     return logits
 
 def temperature_sampling(logits, temperature=0.0):

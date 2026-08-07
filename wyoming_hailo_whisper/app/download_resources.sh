@@ -13,28 +13,28 @@ mkdir -p hefs/h8/tiny
 
 # Download the files using wget
 echo "Downloading tiny-whisper-decoder for Hailo-8..."
-wget -P hefs/h8/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8/tiny-whisper-decoder-fixed-sequence-matmul-split.hef"
+wget -P hefs/h8/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8/tiny-whisper-decoder-fixed-sequence-matmul-split.hef"
 
 echo "Downloading tiny-whisper-encoder for Hailo-8..."
-wget -P hefs/h8/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8/tiny-whisper-encoder-10s_15dB.hef"
+wget -P hefs/h8/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8/tiny-whisper-encoder-10s_15dB.hef"
 
 
 echo "Creating new 'hefs/h8l/tiny' directory..."
 mkdir -p hefs/h8l/tiny
 echo "Downloading tiny-whisper-decoder for Hailo-8L..."
-wget -P hefs/h8l/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/tiny-whisper-decoder-fixed-sequence-matmul-split_h8l.hef"
+wget -P hefs/h8l/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8l/tiny-whisper-decoder-fixed-sequence-matmul-split_h8l.hef"
 
 echo "Downloading tiny-whisper-encoder for Hailo-8L..."
-wget -P hefs/h8l/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/tiny-whisper-encoder-10s_15dB_h8l.hef"
+wget -P hefs/h8l/tiny "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8l/tiny-whisper-encoder-10s_15dB_h8l.hef"
 
 
 echo "Creating new 'hefs/h8/base' directory..."
 mkdir -p hefs/h8/base
 echo "Downloading base-whisper-decoder for Hailo-8..."
-wget -P hefs/h8/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8/base-whisper-decoder-fixed-sequence-matmul-split.hef"
+wget -P hefs/h8/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8/base-whisper-decoder-fixed-sequence-matmul-split.hef"
 
 echo "Downloading base-whisper-encoder for Hailo-8..."
-wget -P hefs/h8/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8/base-whisper-encoder-5s.hef"
+wget -P hefs/h8/base "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/whisper/h8/base-whisper-encoder-5s.hef"
 
 
 echo "Creating new 'hefs/h8l/base' directory..."
@@ -54,8 +54,8 @@ fi
 
 
 echo "Creating new 'decoder_assets/tiny' directory..."
-mkdir -P decoder_assets/tiny
-mkdir -P decoder_assets/tiny/decoder_tokenization
+mkdir -p decoder_assets/tiny
+mkdir -p decoder_assets/tiny/decoder_tokenization
 echo "Downloading decoder assets for tiny model..."
 wget -P decoder_assets/tiny/decoder_tokenization "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/npy%20files/whisper/decoder_assets/tiny/decoder_tokenization/onnx_add_input_tiny.npy"
 wget -P decoder_assets/tiny/decoder_tokenization "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/npy%20files/whisper/decoder_assets/tiny/decoder_tokenization/token_embedding_weight_tiny.npy"
