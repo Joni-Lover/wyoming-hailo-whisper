@@ -56,9 +56,13 @@ class CpuWhisperPipeline:
 
                 _LOGGER.info("CPU transcription: '%s'", transcription)
                 self.results_queue.put(transcription)
-            except Exception:
+            except Exception as err:
                 _LOGGER.exception("Error during CPU inference")
-                self.results_queue.put("")
+                # Keep request failures distinct from valid empty
+                # transcriptions produced for silence. The worker remains
+                # available for subsequent requests while this caller gets
+                # the original generation error.
+                self.results_queue.put(err)
 
     def _transcribe_audio(self, audio, language, initial_prompt=""):
         """Transcribe arbitrary-length audio in Whisper's 30-second windows."""
@@ -126,14 +130,18 @@ class CpuWhisperPipeline:
         self.data_queue.put((data, language, initial_prompt))
 
     def get_transcription(self, timeout_sec: Optional[float] = None):
-        if timeout_sec is None:
-            return self.results_queue.get()
         try:
-            return self.results_queue.get(timeout=timeout_sec)
+            if timeout_sec is None:
+                result = self.results_queue.get()
+            else:
+                result = self.results_queue.get(timeout=timeout_sec)
         except Empty as err:
             raise TimeoutError(
                 f"Timed out waiting for transcription after {timeout_sec} seconds"
             ) from err
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     def stop(self):
         self.running = False
