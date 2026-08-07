@@ -8,7 +8,6 @@ from functools import partial
 from wyoming.info import AsrModel, AsrProgram, Attribution, Info
 from wyoming.server import AsyncServer
 
-from wyoming_hailo_whisper.app.hailo_whisper_pipeline import HailoWhisperPipeline
 from wyoming_hailo_whisper.app.whisper_hef_registry import HEF_REGISTRY
 from wyoming_hailo_whisper.const import (
     CPU_VARIANTS,
@@ -169,6 +168,12 @@ async def main() -> None:
             )
             backend = "CPU"
         else:
+            # Keep CPU-only installations independent of the proprietary
+            # Hailo runtime, which is not part of the Python requirements.
+            from wyoming_hailo_whisper.app.hailo_whisper_pipeline import (
+                HailoWhisperPipeline,
+            )
+
             encoder_path = get_hef_path(args.variant, args.device, "encoder")
             decoder_path = get_hef_path(args.variant, args.device, "decoder")
             model = HailoWhisperPipeline(

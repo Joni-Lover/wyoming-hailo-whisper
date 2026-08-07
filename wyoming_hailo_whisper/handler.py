@@ -20,6 +20,12 @@ from wyoming_hailo_whisper.const import DEFAULT_LANGUAGE
 _LOGGER = logging.getLogger(__name__)
 
 
+def _clean_model_output(transcription: str) -> str:
+    """Remove model silence markers before punctuation is normalized."""
+    transcription = transcription.replace("[BLANK_AUDIO]", "").strip()
+    return clean_transcription(transcription)
+
+
 class HailoWhisperEventHandler(AsyncEventHandler):
     """Handle one Wyoming client stream using the selected inference backend."""
 
@@ -70,7 +76,7 @@ class HailoWhisperEventHandler(AsyncEventHandler):
                 language=self._language,
                 initial_prompt=prompt,
             )
-            parts.append(clean_transcription(self.model.get_transcription()))
+            parts.append(_clean_model_output(self.model.get_transcription()))
 
         return " ".join(part for part in parts if part).strip()
 
@@ -90,7 +96,7 @@ class HailoWhisperEventHandler(AsyncEventHandler):
             language=self._language,
             initial_prompt=getattr(self.cli_args, "initial_prompt", ""),
         )
-        return clean_transcription(self.model.get_transcription())
+        return _clean_model_output(self.model.get_transcription())
 
     def _transcribe(self, sampled_audio: np.ndarray, chunk_offset: float) -> str:
         if getattr(self.cli_args, "use_cpu", False):

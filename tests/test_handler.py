@@ -257,6 +257,18 @@ class TestHailoWhisperEventHandler:
         assert result == ""
         mock_model.send_data.assert_not_called()
 
+    def test_cpu_blank_audio_marker_returns_empty(self, handler, mock_model):
+        handler.cli_args.use_cpu = True
+        mock_model.get_transcription.return_value = "[BLANK_AUDIO]"
+
+        result = handler._transcribe_cpu(
+            np.ones(16000, dtype=np.float32),
+            chunk_offset=0.0,
+        )
+
+        assert result == ""
+        mock_model.send_data.assert_called_once()
+
     def test_hailo_empty_chunks_do_not_become_periods(self, handler, mock_model):
         mock_model.get_transcription.side_effect = ["Hello", "", "   "]
         mel_chunks = [np.zeros((1, 1, 3000, 80)) for _ in range(3)]
