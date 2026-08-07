@@ -22,6 +22,15 @@ from wyoming.info import Describe, Info, AsrProgram, AsrModel
 from wyoming_hailo_whisper.handler import HailoWhisperEventHandler
 
 
+def _speech_audio_bytes(samples, sample_rate=16000):
+    """Create deterministic speech-like audio with a varying energy envelope."""
+    sample_indices = np.arange(samples)
+    signal = np.sin(2 * np.pi * 220 * sample_indices / sample_rate)
+    envelope = np.full(samples, 0.3, dtype=np.float32)
+    envelope[:samples // 4] = 0.01
+    return (signal * envelope * 32768).astype(np.int16).tobytes()
+
+
 @pytest.fixture
 def mock_cli_args():
     """Create mock CLI arguments."""
@@ -186,8 +195,7 @@ class TestHailoWhisperEventHandler:
         duration = 2.0  # 2 seconds
         samples = int(sample_rate * duration)
         # Create speech-like audio (loud enough to not trigger gain)
-        audio_array = np.random.randn(samples).astype(np.float32) * 0.3
-        audio_data = (audio_array * 32768).astype(np.int16).tobytes()
+        audio_data = _speech_audio_bytes(samples, sample_rate)
 
         chunk = AudioChunk(rate=16000, width=2, channels=1, audio=audio_data)
         await handler.handle_event(chunk.event())
@@ -240,6 +248,15 @@ class TestHailoWhisperEventHandler:
             # If it raises an exception, that's also valid behavior
             pytest.skip(f"Handler raised exception for empty audio: {e}")
 
+    def test_cpu_trim_past_end_returns_empty(self, handler, mock_model):
+        handler.cli_args.use_cpu = True
+        audio = np.ones(160, dtype=np.float32)
+
+        result = handler._transcribe_cpu(audio, chunk_offset=1.0)
+
+        assert result == ""
+        mock_model.send_data.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_cleans_transcription_output(self, handler, mock_model):
         """
@@ -254,8 +271,7 @@ class TestHailoWhisperEventHandler:
         # Setup audio
         sample_rate = 16000
         samples = int(sample_rate * 2)  # 2 seconds
-        audio_array = np.random.randn(samples).astype(np.float32) * 0.3
-        audio_data = (audio_array * 32768).astype(np.int16).tobytes()
+        audio_data = _speech_audio_bytes(samples, sample_rate)
 
         chunk = AudioChunk(rate=16000, width=2, channels=1, audio=audio_data)
         await handler.handle_event(chunk.event())
@@ -286,8 +302,7 @@ class TestHailoWhisperEventHandler:
         # Setup audio
         sample_rate = 16000
         samples = int(sample_rate * 1)
-        audio_array = np.random.randn(samples).astype(np.float32) * 0.3
-        audio_data = (audio_array * 32768).astype(np.int16).tobytes()
+        audio_data = _speech_audio_bytes(samples, sample_rate)
 
         chunk = AudioChunk(rate=16000, width=2, channels=1, audio=audio_data)
         await handler.handle_event(chunk.event())
@@ -321,8 +336,7 @@ class TestHailoWhisperEventHandler:
         # Setup audio
         sample_rate = 16000
         samples = int(sample_rate * 2)
-        audio_array = np.random.randn(samples).astype(np.float32) * 0.3
-        audio_data = (audio_array * 32768).astype(np.int16).tobytes()
+        audio_data = _speech_audio_bytes(samples, sample_rate)
 
         chunk = AudioChunk(rate=16000, width=2, channels=1, audio=audio_data)
         await handler.handle_event(chunk.event())
@@ -407,10 +421,14 @@ class TestHandlerIntegration:
         total_duration = 2.0  # 2 seconds total
 
         num_chunks = int(total_duration / chunk_duration)
+        stream_audio = _speech_audio_bytes(
+            int(total_duration * sample_rate),
+            sample_rate,
+        )
         for i in range(num_chunks):
             samples = int(sample_rate * chunk_duration)
-            audio_array = np.random.randn(samples).astype(np.float32) * 0.3
-            audio_data = (audio_array * 32768).astype(np.int16).tobytes()
+            chunk_bytes = samples * 2
+            audio_data = stream_audio[i * chunk_bytes:(i + 1) * chunk_bytes]
 
             chunk = AudioChunk(rate=16000, width=2, channels=1, audio=audio_data)
             result = await handler.handle_event(chunk.event())

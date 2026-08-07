@@ -142,6 +142,9 @@ def improve_input_audio(audio, vad=True, enhance=False, low_audio_gain=None):
     """
     sample_rate = audio_utils.SAMPLE_RATE
 
+    if np.size(audio) == 0:
+        return audio, 0.0
+
     # Backward-compatible alias used by the original fork. When supplied, keep
     # its simple 20 dB boost semantics instead of enabling the new DSP chain.
     if low_audio_gain is not None:
@@ -196,6 +199,8 @@ def detect_first_speech(audio_data, sample_rate, threshold=0.2, frame_duration=0
 
     # Calculate frame size in samples
     frame_size = int(frame_duration * sample_rate)
+    if frame_size <= 0 or len(audio_data) == 0:
+        return None
 
     # Split the audio into frames
     frames = [audio_data[i:i + frame_size] for i in range(0, len(audio_data), frame_size)]
@@ -207,17 +212,22 @@ def detect_first_speech(audio_data, sample_rate, threshold=0.2, frame_duration=0
         [np.sum(np.abs(frame) ** 2) / len(frame) for frame in frames]
     )
 
-    # Normalize energy to [0, 1]
+    # Estimate the background level and require speech to rise above it. This
+    # keeps quiet-but-distinct speech detectable without treating flat,
+    # low-level microphone noise as speech.
     max_energy = float(np.max(energy))
-    # Relative normalization alone classifies any non-zero noise as speech.
-    # Reject frames below a small absolute floor before normalizing.
-    if max_energy < 1e-5:
+    if max_energy <= np.finfo(np.float64).eps:
         return None
 
-    threshold_energy = threshold * max_energy
-    noise_floor = float(np.percentile(energy, 20, method="lower"))
-    if noise_floor > 0 and (max_energy / noise_floor) > 2:
-        threshold_energy = max(threshold_energy, noise_floor * 2.0)
+    noise_floor = float(np.percentile(energy, 10, method="lower"))
+    minimum_contrast = max(noise_floor, np.finfo(np.float64).eps) * 2.0
+    if max_energy <= minimum_contrast:
+        return None
+
+    threshold_energy = max(
+        noise_floor + threshold * (max_energy - noise_floor),
+        minimum_contrast,
+    )
 
     # Detect the first frame above both the relative and estimated-noise gates.
     for i, e in enumerate(energy):

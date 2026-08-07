@@ -75,8 +75,15 @@ class HailoWhisperEventHandler(AsyncEventHandler):
         return " ".join(part for part in parts if part).strip()
 
     def _transcribe_cpu(self, sampled_audio: np.ndarray, chunk_offset: float) -> str:
-        offset_samples = int(chunk_offset * 16000)
+        offset_samples = min(
+            max(int(chunk_offset * 16000), 0),
+            len(sampled_audio),
+        )
         trimmed_audio = sampled_audio[offset_samples:]
+        if not trimmed_audio.size:
+            _LOGGER.info("CPU: no audio remains after trimming")
+            return ""
+
         _LOGGER.info("CPU: processing %.2fs of audio", len(trimmed_audio) / 16000)
         self.model.send_data(
             trimmed_audio,

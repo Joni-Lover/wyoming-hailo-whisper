@@ -6,9 +6,17 @@ from transformers import AutoTokenizer
 from queue import Queue, Empty
 from threading import Thread
 from typing import Optional
-from wyoming_hailo_whisper.common.postprocessing import apply_repetition_penalty, suppress_special_tokens, WHISPER_EOT_TOKEN
+from wyoming_hailo_whisper.common.postprocessing import (
+    WHISPER_EOT_TOKEN,
+    apply_repetition_penalty,
+    beam_search_can_stop,
+    length_normalized_score,
+    suppress_special_tokens,
+)
 
 _LOGGER = logging.getLogger(__name__)
+DEFAULT_TRANSCRIPTION_TIMEOUT_SEC = 15.0
+_INFERENCE_FAILED = object()
 
 
 class HailoWhisperPipeline:
@@ -58,6 +66,7 @@ class HailoWhisperPipeline:
 
         self.data_queue = Queue()
         self.results_queue = Queue()
+        self._error = None
         self.running = True
         self.thread = Thread(target=self._inference_loop, daemon=True)
         self.thread.start()
@@ -144,8 +153,11 @@ class HailoWhisperPipeline:
         """
         try:
             self._run_inference()
-        except Exception:
+        except Exception as err:
+            self._error = err
+            self.running = False
             _LOGGER.exception("Inference loop crashed")
+            self.results_queue.put(_INFERENCE_FAILED)
 
     def _run_inference(self):
         params = VDevice.create_params()
@@ -206,17 +218,19 @@ class HailoWhisperPipeline:
 
                         try:
                             input_mel = np.ascontiguousarray(input_mel, dtype=np.float32)
-                            _LOGGER.info("Input mel shape: %s", input_mel.shape)
+                            _LOGGER.debug("Input mel shape: %s", input_mel.shape)
                             encoder_bindings.input().set_buffer(input_mel)
                             buffer = np.zeros(encoder_infer_model.output().shape).astype(np.float32)
                             encoder_bindings.output().set_buffer(buffer)
 
                             encoder_configured_infer_model.run([encoder_bindings], self.timeout_ms)
                             encoded_features = encoder_bindings.output().get_buffer()
-                            _LOGGER.info("Encoded features shape: %s", encoded_features.shape)
-                            _LOGGER.info("Encoded features stats: min=%.6f, max=%.6f, mean=%.6f, std=%.6f",
-                                         encoded_features.min(), encoded_features.max(),
-                                         encoded_features.mean(), encoded_features.std())
+                            _LOGGER.debug("Encoded features shape: %s", encoded_features.shape)
+                            _LOGGER.debug(
+                                "Encoded features stats: min=%.6f, max=%.6f, mean=%.6f, std=%.6f",
+                                encoded_features.min(), encoded_features.max(),
+                                encoded_features.mean(), encoded_features.std(),
+                            )
 
                             # Build forced Whisper prefix: SOT, language, transcribe, notimestamps
                             language = language or self.language
@@ -252,7 +266,7 @@ class HailoWhisperPipeline:
                                     prefix = [startofprev_token] + prompt_token_ids + prefix
                                     _LOGGER.info("Prompt prefix: %d prompt tokens + 4 control tokens", len(prompt_token_ids))
 
-                            _LOGGER.info("Forced prefix: %s (language=%s)", prefix, language)
+                            _LOGGER.debug("Forced prefix: %s (language=%s)", prefix, language)
 
                             # Helper: run one decoder step and return raw logits at position
                             def run_decoder_step(beam_ids, pos):
@@ -270,6 +284,9 @@ class HailoWhisperPipeline:
                             beam_size = self.beam_size
                             length_penalty_alpha = 0.6
                             first_decode_pos = len(prefix) - 1
+                            max_content_length = (
+                                self.decoding_sequence_length - first_decode_pos - 1
+                            )
 
                             # Initialize beams
                             initial_ids = np.zeros((1, self.decoding_sequence_length), dtype=np.int64)
@@ -283,7 +300,7 @@ class HailoWhisperPipeline:
                                 'score': 0.0,
                             }]
                             finished_beams = []
-                            _LOGGER.info("Decoding with beam_size=%d", beam_size)
+                            _LOGGER.debug("Decoding with beam_size=%d", beam_size)
 
                             # Beam search decoding loop
                             for i in range(first_decode_pos, self.decoding_sequence_length - 1):
@@ -307,9 +324,9 @@ class HailoWhisperPipeline:
                                     if i == first_decode_pos and beam is active_beams[0]:
                                         top5 = top_indices[:5]
                                         top5_tokens = [self.tokenizer.decode([idx]) for idx in top5]
-                                        _LOGGER.info("Step %d: top5=%s ids=%s scores=%.2f..%.2f",
-                                                     i, top5_tokens, top5.tolist(),
-                                                     float(log_probs[top5[0]]), float(log_probs[top5[-1]]))
+                                        _LOGGER.debug("Step %d: top5=%s ids=%s scores=%.2f..%.2f",
+                                                      i, top5_tokens, top5.tolist(),
+                                                      float(log_probs[top5[0]]), float(log_probs[top5[-1]]))
 
                                     for idx_np in top_indices:
                                         idx = int(idx_np)
@@ -329,19 +346,35 @@ class HailoWhisperPipeline:
                                 # Keep top beam_size active beams by score
                                 all_candidates.sort(key=lambda b: b['score'], reverse=True)
                                 active_beams = all_candidates[:beam_size]
+                                finished_beams.sort(
+                                    key=lambda b: length_normalized_score(
+                                        b['score'],
+                                        len(b['content']),
+                                        length_penalty_alpha,
+                                    ),
+                                    reverse=True,
+                                )
+                                finished_beams = finished_beams[:beam_size]
 
                                 if not active_beams:
                                     break
 
-                                # Early stop if enough finished beams collected
-                                if len(finished_beams) >= beam_size:
+                                if beam_search_can_stop(
+                                    finished_beams,
+                                    active_beams,
+                                    max_content_length,
+                                    length_penalty_alpha,
+                                ):
                                     break
 
                             # Select best beam with length-normalized score
                             all_beams = finished_beams + active_beams
                             def beam_score(b):
-                                length = max(len(b['content']), 1)
-                                return b['score'] / (length ** length_penalty_alpha)
+                                return length_normalized_score(
+                                    b['score'],
+                                    len(b['content']),
+                                    length_penalty_alpha,
+                                )
 
                             best = max(all_beams, key=beam_score)
                             generated_tokens = best['tokens']
@@ -349,11 +382,11 @@ class HailoWhisperPipeline:
                             _LOGGER.info("Beam search: %d finished, %d active, best_score=%.2f, length=%d",
                                          len(finished_beams), len(active_beams),
                                          beam_score(best), len(best['content']))
-                            _LOGGER.info("Generated tokens: %s", generated_tokens)
+                            _LOGGER.debug("Generated tokens: %s", generated_tokens)
                             transcription = self.tokenizer.decode(
                                 generated_tokens, skip_special_tokens=True
                             )
-                            _LOGGER.info("Transcription: '%s'", transcription)
+                            _LOGGER.debug("Transcription: '%s'", transcription)
                             self.results_queue.put(transcription)
                         except Exception:
                             _LOGGER.exception("Error during inference")
@@ -375,7 +408,12 @@ class HailoWhisperPipeline:
         :param language: Language code for transcription (e.g., "en", "sv").
         :param initial_prompt: Optional text to condition the decoder.
         """
+        self._raise_if_failed()
         self.data_queue.put((data, language or self.language, initial_prompt))
+
+    def _raise_if_failed(self):
+        if self._error is not None:
+            raise RuntimeError("Hailo inference worker failed") from self._error
 
     def get_transcription(self, timeout_sec: Optional[float] = None):
         """
@@ -383,14 +421,22 @@ class HailoWhisperPipeline:
 
         :return: Transcription result.
         """
-        if timeout_sec is None:
-            return self.results_queue.get()
+        self._raise_if_failed()
+        wait_timeout = (
+            DEFAULT_TRANSCRIPTION_TIMEOUT_SEC
+            if timeout_sec is None
+            else timeout_sec
+        )
         try:
-            return self.results_queue.get(timeout=timeout_sec)
+            result = self.results_queue.get(timeout=wait_timeout)
         except Empty as err:
             raise TimeoutError(
-                f"Timed out waiting for transcription after {timeout_sec} seconds"
+                f"Timed out waiting for transcription after {wait_timeout} seconds"
             ) from err
+        if result is _INFERENCE_FAILED:
+            self._raise_if_failed()
+            raise RuntimeError("Hailo inference worker stopped unexpectedly")
+        return result
 
     def transcribe_mel(
         self,

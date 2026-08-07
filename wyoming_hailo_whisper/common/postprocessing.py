@@ -48,10 +48,15 @@ def apply_repetition_penalty(logits, generated_tokens, penalty=1.5, last_window=
         bigram_counts = Counter()
         for j in range(len(generated_tokens) - 1):
             bigram_counts[(generated_tokens[j], generated_tokens[j + 1])] += 1
-        for token_id in range(min(len(logits), WHISPER_SPECIAL_TOKEN_START)):
+        blocked_tokens = {
+            token_id
+            for (first_token, token_id), count in bigram_counts.items()
+            if first_token == prev_token and count >= 2
+        }
+        for token_id in blocked_tokens:
             if (
-                token_id not in excluded_tokens
-                and bigram_counts.get((prev_token, token_id), 0) >= 2
+                0 <= token_id < min(len(logits), WHISPER_SPECIAL_TOKEN_START)
+                and token_id not in excluded_tokens
             ):
                 logits[token_id] = -np.inf
 
@@ -59,17 +64,50 @@ def apply_repetition_penalty(logits, generated_tokens, penalty=1.5, last_window=
         # Trigram blocking: if (t-2, t-1, candidate) already appeared, suppress candidate
         t_minus_2 = generated_tokens[-2]
         t_minus_1 = generated_tokens[-1]
-        trigram_set = set()
-        for j in range(len(generated_tokens) - 2):
-            trigram_set.add((generated_tokens[j], generated_tokens[j + 1], generated_tokens[j + 2]))
-        for token_id in range(min(len(logits), WHISPER_SPECIAL_TOKEN_START)):
+        blocked_tokens = {
+            generated_tokens[j + 2]
+            for j in range(len(generated_tokens) - 2)
             if (
-                token_id not in excluded_tokens
-                and (t_minus_2, t_minus_1, token_id) in trigram_set
+                generated_tokens[j] == t_minus_2
+                and generated_tokens[j + 1] == t_minus_1
+            )
+        }
+        for token_id in blocked_tokens:
+            if (
+                0 <= token_id < min(len(logits), WHISPER_SPECIAL_TOKEN_START)
+                and token_id not in excluded_tokens
             ):
                 logits[token_id] = -np.inf
 
     return logits
+
+
+def length_normalized_score(score, length, alpha=0.6):
+    """Normalize a beam score while avoiding division by zero."""
+    return score / (max(length, 1) ** alpha)
+
+
+def beam_search_can_stop(finished_beams, active_beams, max_content_length, alpha=0.6):
+    """Return whether no active beam can beat the best finished beam.
+
+    Log-probabilities are non-positive, so an active beam's optimistic bound
+    assumes all remaining tokens have log-probability zero and uses the
+    maximum possible output length for normalization.
+    """
+    if not finished_beams:
+        return False
+    if not active_beams:
+        return True
+
+    best_finished = max(
+        length_normalized_score(beam["score"], len(beam["content"]), alpha)
+        for beam in finished_beams
+    )
+    best_active_bound = max(
+        length_normalized_score(beam["score"], max_content_length, alpha)
+        for beam in active_beams
+    )
+    return best_finished >= best_active_bound
 
 
 def suppress_special_tokens(logits, allow_eot=True):

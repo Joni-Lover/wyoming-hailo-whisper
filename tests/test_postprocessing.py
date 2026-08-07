@@ -119,6 +119,48 @@ class TestRepetitionPenalty:
         assert penalized_strong[42] == pytest.approx(10.0 / 2.0)
         assert penalized_weak[42] == pytest.approx(10.0 / 1.2)
 
+    def test_blocks_only_observed_ngram_continuations(self):
+        logits = np.ones((1, 100), dtype=np.float32)
+
+        bigram_result = postprocessing.apply_repetition_penalty(
+            logits,
+            [7, 8, 7, 8, 7],
+        )
+        trigram_result = postprocessing.apply_repetition_penalty(
+            logits,
+            [3, 4, 5, 3, 4],
+        )
+
+        assert bigram_result[8] == -np.inf
+        assert trigram_result[5] == -np.inf
+        assert np.isfinite(bigram_result[99])
+        assert np.isfinite(trigram_result[99])
+
+
+class TestBeamSearchCompletion:
+    def test_low_score_finished_beams_do_not_stop_active_beam(self):
+        finished = [
+            {"score": -5.0 - index, "content": [50257]}
+            for index in range(5)
+        ]
+        active = [{"score": -0.5, "content": [42, 43]}]
+
+        assert not postprocessing.beam_search_can_stop(
+            finished,
+            active,
+            max_content_length=20,
+        )
+
+    def test_stops_when_finished_beam_beats_active_upper_bound(self):
+        finished = [{"score": -0.1, "content": [42, 50257]}]
+        active = [{"score": -1.0, "content": [42, 43]}]
+
+        assert postprocessing.beam_search_can_stop(
+            finished,
+            active,
+            max_content_length=20,
+        )
+
 
 class TestTemperatureSampling:
     """

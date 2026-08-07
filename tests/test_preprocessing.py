@@ -95,7 +95,12 @@ class TestVoiceActivityDetection:
     def test_detects_speech_immediately(self):
         """Shows that VAD detects speech at the start if it's loud enough."""
         sample_rate = 16000
-        audio = np.random.randn(sample_rate) * 0.5  # Loud from the start
+        frame_samples = int(0.02 * sample_rate)
+        first_frame = np.sin(
+            2 * np.pi * 220 * np.arange(frame_samples) / sample_rate
+        ) * 0.5
+        quieter_tail = np.random.randn(sample_rate - frame_samples) * 0.02
+        audio = np.concatenate([first_frame, quieter_tail])
 
         start_time = preprocessing.detect_first_speech(
             audio, sample_rate, threshold=0.2
@@ -104,6 +109,38 @@ class TestVoiceActivityDetection:
         # Should detect at or near 0.0 seconds
         assert start_time is not None
         assert start_time < 0.1
+
+    def test_detects_quiet_speech_above_its_noise_floor(self):
+        """Quiet speech is detected when it is distinct from the background."""
+        sample_rate = 16000
+        silence = np.zeros(int(0.1 * sample_rate), dtype=np.float32)
+        samples = np.arange(int(0.2 * sample_rate))
+        quiet_speech = (
+            np.sin(2 * np.pi * 220 * samples / sample_rate) * 0.001
+        ).astype(np.float32)
+
+        start_time = preprocessing.detect_first_speech(
+            np.concatenate([silence, quiet_speech]),
+            sample_rate,
+            threshold=0.2,
+            frame_duration=0.02,
+        )
+
+        assert start_time is not None
+        assert 0.08 <= start_time <= 0.12
+
+    @pytest.mark.parametrize(
+        ("sample_rate", "frame_duration"),
+        [(0, 0.02), (16000, 0.0), (16000, 0.000001)],
+    )
+    def test_rejects_invalid_frame_size(self, sample_rate, frame_duration):
+        audio = np.ones(100, dtype=np.float32)
+
+        assert preprocessing.detect_first_speech(
+            audio,
+            sample_rate,
+            frame_duration=frame_duration,
+        ) is None
 
     def test_converts_stereo_to_mono(self):
         """Shows that VAD handles stereo audio by averaging channels."""
@@ -139,6 +176,18 @@ class TestImproveInputAudio:
 
         # Should be amplified by 20 dB (10x)
         assert np.max(improved_audio) > np.max(audio) * 5  # At least 5x increase
+
+    def test_empty_audio_with_enhancement_returns_unchanged(self):
+        audio = np.array([], dtype=np.float32)
+
+        improved_audio, start_time = preprocessing.improve_input_audio(
+            audio,
+            vad=True,
+            enhance=True,
+        )
+
+        np.testing.assert_array_equal(improved_audio, audio)
+        assert start_time == 0.0
 
     def test_no_gain_for_loud_audio(self):
         """Shows that audio with max >= 0.1 is not modified."""
