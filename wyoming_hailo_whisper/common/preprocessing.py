@@ -117,7 +117,11 @@ def spectral_noise_reduce(audio, sample_rate, spectral_floor=0.08):
     then applies a soft gain mask based on per-frame SNR. This is
     conservative to avoid removing speech or introducing artifacts.
     """
-    nperseg = 512
+    # SciPy shortens ``nperseg`` when the input is shorter than the requested
+    # window, but it does not shorten an explicitly supplied ``noverlap``.
+    # Derive both values from the actual input length so sub-window recordings
+    # still satisfy ``noverlap < nperseg``.
+    nperseg = min(512, len(audio))
     noverlap = nperseg // 2
 
     f, t, Zxx = stft(audio, fs=sample_rate, nperseg=nperseg, noverlap=noverlap)

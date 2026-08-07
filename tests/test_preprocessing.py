@@ -206,6 +206,28 @@ class TestImproveInputAudio:
         np.testing.assert_array_equal(improved_audio, audio)
         assert start_time == 0.0
 
+    @pytest.mark.parametrize("sample_count", [1, 256, 257])
+    def test_enhancement_handles_audio_shorter_than_stft_window(
+        self, sample_count
+    ):
+        audio = np.linspace(
+            -0.1,
+            0.1,
+            sample_count,
+            dtype=np.float32,
+        )
+
+        improved_audio, start_time = preprocessing.improve_input_audio(
+            audio,
+            vad=False,
+            enhance=True,
+        )
+
+        assert improved_audio.shape == audio.shape
+        assert improved_audio.dtype == np.float32
+        assert np.all(np.isfinite(improved_audio))
+        assert start_time == 0
+
     def test_no_gain_for_loud_audio(self):
         """Shows that audio with max >= 0.1 is not modified."""
         audio = np.array([0.5, -0.4, 0.3, -0.2], dtype=np.float32)
