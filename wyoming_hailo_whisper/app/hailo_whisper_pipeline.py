@@ -8,10 +8,9 @@ from threading import Thread
 from typing import Optional
 from wyoming_hailo_whisper.common.postprocessing import (
     WHISPER_EOT_TOKEN,
-    apply_repetition_penalty,
     beam_search_can_stop,
     length_normalized_score,
-    suppress_special_tokens,
+    prepare_decoder_logits,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -309,9 +308,13 @@ class HailoWhisperPipeline:
                                 for beam in active_beams:
                                     raw_logits = run_decoder_step(beam['ids'], i)
 
-                                    content_count = i - first_decode_pos
-                                    logits = apply_repetition_penalty(raw_logits, beam['content'], penalty=1.5)
-                                    logits = suppress_special_tokens(logits, allow_eot=content_count >= 1)
+                                    # EOT must remain available on the first step:
+                                    # silent chunks should be allowed to produce no content.
+                                    logits = prepare_decoder_logits(
+                                        raw_logits,
+                                        beam['content'],
+                                        penalty=1.5,
+                                    )
 
                                     # Log softmax for beam scoring
                                     max_l = np.max(logits)

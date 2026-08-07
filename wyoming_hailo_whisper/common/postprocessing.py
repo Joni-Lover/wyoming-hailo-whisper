@@ -16,8 +16,10 @@ def apply_repetition_penalty(logits, generated_tokens, penalty=1.5, last_window=
     Apply frequency-scaled repetition penalty to the logits.
 
     Tokens that appear multiple times in the recent window get exponentially
-    stronger penalties (penalty^count). Tokens repeated 3+ consecutive times
-    and tokens forming repeated bigrams are suppressed entirely.
+    stronger, sign-aware penalties (penalty^count). Positive logits are
+    divided and negative logits are multiplied so both become less likely.
+    Tokens repeated 3+ consecutive times and tokens forming repeated bigrams
+    are suppressed entirely.
     """
     from collections import Counter
 
@@ -30,7 +32,11 @@ def apply_repetition_penalty(logits, generated_tokens, penalty=1.5, last_window=
 
     for token, count in token_counts.items():
         if token not in excluded_tokens and token < WHISPER_SPECIAL_TOKEN_START:
-            logits[token] /= penalty ** count
+            scaled_penalty = penalty ** count
+            if logits[token] < 0:
+                logits[token] *= scaled_penalty
+            else:
+                logits[token] /= scaled_penalty
 
     # Suppress tokens repeated more than 3 consecutive times
     if len(generated_tokens) >= 3:
@@ -118,6 +124,18 @@ def suppress_special_tokens(logits, allow_eot=True):
     start = WHISPER_EOT_TOKEN + 1 if allow_eot else WHISPER_EOT_TOKEN
     logits[start:] = -np.inf
     return logits
+
+
+def prepare_decoder_logits(logits, generated_tokens, penalty=1.5):
+    """Apply Hailo decoding constraints while always allowing EOT.
+
+    EOT is a valid first prediction for a silent chunk. Suppressing it until a
+    content token exists forces Whisper to emit a lexical token and can create
+    hallucinated text.
+    """
+    logits = apply_repetition_penalty(logits, generated_tokens, penalty=penalty)
+    return suppress_special_tokens(logits, allow_eot=True)
+
 
 def temperature_sampling(logits, temperature=0.0):
     """

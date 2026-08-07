@@ -6,6 +6,25 @@ import logging
 from scipy.signal import butter, sosfilt, stft, istft
 
 _LOGGER = logging.getLogger(__name__)
+_MAX_NOISE_SPECTRAL_FLATNESS = 0.45
+
+
+def _spectral_flatness(frame):
+    """Return a 0..1 estimate of how noise-like an audio frame is."""
+    if len(frame) < 2:
+        return 1.0
+
+    power = np.abs(np.fft.rfft(frame.astype(np.float64))) ** 2
+    power = power[1:]  # Ignore DC, which otherwise makes offsets look voiced.
+    if not power.size:
+        return 1.0
+
+    epsilon = np.finfo(np.float64).eps
+    return float(
+        np.exp(np.mean(np.log(power + epsilon)))
+        / (np.mean(power) + epsilon)
+    )
+
 
 def preprocess(audio, is_nhwc=False, chunk_length = 10, chunk_offset=0, max_duration = 60, overlap=0.0):
     """
@@ -220,8 +239,20 @@ def detect_first_speech(audio_data, sample_rate, threshold=0.2, frame_duration=0
         return None
 
     noise_floor = float(np.percentile(energy, 10, method="lower"))
-    minimum_contrast = max(noise_floor, np.finfo(np.float64).eps) * 2.0
+    epsilon = np.finfo(np.float64).eps
+    minimum_contrast = max(noise_floor, epsilon) * 2.0
     if max_energy <= minimum_contrast:
+        # With no quiet pre-roll, the low percentile may be speech rather than
+        # the noise floor. Use spectral structure as a conservative fallback:
+        # speech/tones have low flatness, while stationary white noise remains
+        # close to one. This also supports one-frame short commands.
+        flatness = np.asarray([_spectral_flatness(frame) for frame in frames])
+        if float(np.percentile(flatness, 10)) >= _MAX_NOISE_SPECTRAL_FLATNESS:
+            return None
+
+        for i, value in enumerate(flatness):
+            if value < _MAX_NOISE_SPECTRAL_FLATNESS and energy[i] > epsilon:
+                return round(i * frame_duration, 1)
         return None
 
     threshold_energy = max(

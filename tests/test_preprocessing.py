@@ -129,6 +129,23 @@ class TestVoiceActivityDetection:
         assert start_time is not None
         assert 0.08 <= start_time <= 0.12
 
+    def test_detects_structured_speech_without_quiet_preroll(self):
+        """Uniformly energetic speech must not become its own noise floor."""
+        sample_rate = 16000
+        samples = np.arange(int(0.4 * sample_rate))
+        speech = (
+            np.sin(2 * np.pi * 220 * samples / sample_rate) * 0.001
+        ).astype(np.float32)
+
+        start_time = preprocessing.detect_first_speech(
+            speech,
+            sample_rate,
+            threshold=0.2,
+            frame_duration=0.2,
+        )
+
+        assert start_time == 0.0
+
     @pytest.mark.parametrize(
         ("sample_rate", "frame_duration"),
         [(0, 0.02), (16000, 0.0), (16000, 0.000001)],

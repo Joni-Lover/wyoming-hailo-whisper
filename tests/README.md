@@ -125,7 +125,8 @@ pytest tests/test_postprocessing.py::TestRepetitionPenalty::test_reduces_logits_
 ```
 
 **What You'll Learn:**
-- Recent tokens (last 8) get logits divided by penalty factor (1.5)
+- Recent tokens get a sign-aware penalty: positive logits are divided and
+  negative logits are multiplied by the penalty factor
 - Punctuation tokens (11, 13) are excluded from penalty
 - Temperature = 0 → greedy decoding (argmax)
 - Temperature > 0 → sampling with randomness
@@ -256,7 +257,7 @@ frame_duration = 0.02      # 20ms frames
 
 ### Postprocessing
 ```python
-repetition_penalty = 1.5   # Divide recent token logits
+repetition_penalty = 1.5   # Move repeated-token logits away from zero
 last_window = 8            # Penalize last 8 tokens
 excluded_tokens = [11, 13] # Punctuation (no penalty)
 temperature = 0.0          # Greedy decoding

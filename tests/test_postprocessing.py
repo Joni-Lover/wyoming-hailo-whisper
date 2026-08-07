@@ -119,6 +119,20 @@ class TestRepetitionPenalty:
         assert penalized_strong[42] == pytest.approx(10.0 / 2.0)
         assert penalized_weak[42] == pytest.approx(10.0 / 1.2)
 
+    def test_negative_repeated_logits_become_less_likely(self):
+        """Negative repeated-token logits move away from zero."""
+        logits = np.full((1, 100), -1.0, dtype=np.float32)
+        logits[0, 42] = -10.0
+
+        penalized = postprocessing.apply_repetition_penalty(
+            logits,
+            [42, 42],
+            penalty=1.5,
+        )
+
+        assert penalized[42] == pytest.approx(-10.0 * (1.5 ** 2))
+        assert penalized[42] < logits[0, 42]
+
     def test_blocks_only_observed_ngram_continuations(self):
         logits = np.ones((1, 100), dtype=np.float32)
 
@@ -138,6 +152,20 @@ class TestRepetitionPenalty:
 
 
 class TestBeamSearchCompletion:
+    def test_decoder_allows_eot_as_first_content_token(self):
+        logits = np.zeros(
+            (1, postprocessing.WHISPER_SPECIAL_TOKEN_START + 3),
+            dtype=np.float32,
+        )
+        logits[0, postprocessing.WHISPER_EOT_TOKEN] = 10.0
+        logits[0, postprocessing.WHISPER_EOT_TOKEN + 1] = 9.0
+
+        prepared = postprocessing.prepare_decoder_logits(logits, [])
+
+        assert np.isfinite(prepared[postprocessing.WHISPER_EOT_TOKEN])
+        assert prepared[postprocessing.WHISPER_EOT_TOKEN] == 10.0
+        assert prepared[postprocessing.WHISPER_EOT_TOKEN + 1] == -np.inf
+
     def test_low_score_finished_beams_do_not_stop_active_beam(self):
         finished = [
             {"score": -5.0 - index, "content": [50257]}
