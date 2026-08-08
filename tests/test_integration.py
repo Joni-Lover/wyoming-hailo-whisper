@@ -7,11 +7,11 @@ These tests show how all components work together:
 3. Real-world scenarios
 """
 
+
 import numpy as np
 import pytest
-from unittest.mock import Mock, patch
 
-from wyoming_hailo_whisper.common import audio_utils, preprocessing, postprocessing
+from wyoming_hailo_whisper.common import postprocessing, preprocessing
 
 
 class TestEndToEndAudioProcessing:
@@ -77,7 +77,7 @@ class TestEndToEndAudioProcessing:
 
         print(f"   Number of chunks: {len(mel_spectrograms)}")
         print(f"   Shape per chunk: {mel_spectrograms[0].shape}")
-        print(f"   Format: NHWC (Hailo format)")
+        print("   Format: NHWC (Hailo format)")
 
         assert len(mel_spectrograms) >= 1
         # 10 seconds at 100 frames/second = 1000 frames
@@ -112,7 +112,7 @@ class TestEndToEndAudioProcessing:
             ↓
         Tokenizer.decode (tokens → text)
             ↓
-        clean_transcription (remove duplicates)
+        clean_transcription (normalize whitespace only)
             ↓
         Final Transcription
         """
@@ -157,7 +157,7 @@ class TestEndToEndAudioProcessing:
 
         print(f"   ... (generated {len(generated_tokens)} tokens total)")
 
-        # Step 2: Simulate raw transcription (with issues)
+        # Step 2: Simulate raw transcription with meaningful repetition
         print("\n2. Raw Transcription (from tokenizer)")
         raw_transcription = "The weather is nice today. The weather is nice today."
         print(f"   Raw: '{raw_transcription}'")
@@ -167,8 +167,7 @@ class TestEndToEndAudioProcessing:
         cleaned = postprocessing.clean_transcription(raw_transcription)
         print(f"   Cleaned: '{cleaned}'")
 
-        assert cleaned == "The weather is nice today."
-        assert len(cleaned) < len(raw_transcription)
+        assert cleaned == raw_transcription
 
         print("\n✓ Transcription successfully cleaned")
 
@@ -309,7 +308,7 @@ class TestRealisticScenarios:
         )
 
         print(f"2. Speech detected at: {speech_start:.2f}s")
-        print(f"   (Button delay: ~0.3s)")
+        print("   (Button delay: ~0.3s)")
 
         # Generate mel spectrograms
         mel_spectrograms = preprocessing.preprocess(
@@ -367,7 +366,7 @@ class TestRealisticScenarios:
         )
 
         print(f"2. Speech detected at: {speech_start:.2f}s")
-        print(f"   Expected around 5.0s")
+        print("   Expected around 5.0s")
 
         # Process only from speech start
         mel_spectrograms = preprocessing.preprocess(

@@ -12,21 +12,58 @@ from wyoming_hailo_whisper.app.request_queue import InferenceRequestQueue
 from wyoming_hailo_whisper.common.postprocessing import (
     WHISPER_EOT_TOKEN,
     beam_search_can_stop,
+    compression_ratio,
     length_normalized_score,
     prepare_decoder_logits,
 )
+from wyoming_hailo_whisper.const import normalize_language_code
 
 _LOGGER = logging.getLogger(__name__)
 DEFAULT_TRANSCRIPTION_TIMEOUT_SEC = 15.0
+DEFAULT_HAILO_RUN_TIMEOUT_MS = 15_000
+MIN_GENERATED_TOKENS_WITH_PROMPT = 16
+WHISPER_CONTROL_TOKEN_COUNT = 4
 
 
-def max_initial_prompt_tokens(decoding_sequence_length: int) -> int:
+def max_initial_prompt_tokens(
+    decoding_sequence_length: int,
+    min_generated_tokens: int = MIN_GENERATED_TOKENS_WITH_PROMPT,
+    control_token_count: int = WHISPER_CONTROL_TOKEN_COUNT,
+) -> int:
     """Return Whisper's prompt-text budget for one decoder context.
 
-    OpenAI Whisper reserves half of the text context for new transcription.
-    The returned count excludes the separate ``<|startofprev|>`` token.
+    Keep Whisper's half-context prompt policy, while also reserving an explicit
+    result budget for short fixed-sequence Hailo decoders. The returned count
+    excludes the separate ``<|startofprev|>`` token.
     """
-    return max(decoding_sequence_length // 2 - 1, 0)
+    half_context_budget = max(decoding_sequence_length // 2 - 1, 0)
+    output_reserved_budget = max(
+        decoding_sequence_length
+        - control_token_count
+        - 1  # <|startofprev|>
+        - min_generated_tokens,
+        0,
+    )
+    return min(half_context_budget, output_reserved_budget)
+
+
+def build_decode_metrics(
+    transcription: str,
+    content_tokens,
+    score: float,
+    finished: bool,
+    max_content_length: int,
+) -> dict:
+    """Build diagnostics without applying confidence thresholds."""
+    text_tokens = [
+        token for token in content_tokens if token != WHISPER_EOT_TOKEN
+    ]
+    return {
+        "token_count": len(text_tokens),
+        "avg_logprob": score / max(len(content_tokens), 1),
+        "compression_ratio": compression_ratio(transcription),
+        "truncated": not finished and len(content_tokens) >= max_content_length,
+    }
 
 
 class HailoWhisperPipeline:
@@ -56,9 +93,10 @@ class HailoWhisperPipeline:
         """
         self.encoder_model_path = encoder_model_path
         self.decoder_model_path = decoder_model_path
-        self.timeout_ms = 100000000
+        self.timeout_ms = DEFAULT_HAILO_RUN_TIMEOUT_MS
         self.variant = variant
-        self.language = language or "en"
+        self.language = normalize_language_code(language)
+        self.last_decode_metrics = {}
 
         self.decoding_sequence_length = None  # set automatically based on HEF details
         self.host = host  # not used in this version
@@ -106,7 +144,17 @@ class HailoWhisperPipeline:
         """
         Load the tokenizer for the specified variant.
         """
-        self.tokenizer = AutoTokenizer.from_pretrained(f"openai/whisper-{self.variant}")
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        tokenizer_path = os.path.join(
+            base_path,
+            "decoder_assets",
+            self.variant,
+            "tokenizer",
+        )
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path,
+            local_files_only=True,
+        )
         self.startoftranscript_token_id = self.tokenizer.convert_tokens_to_ids(
             "<|startoftranscript|>"
         )
@@ -119,7 +167,16 @@ class HailoWhisperPipeline:
 
     def _get_language_token(self, language: Optional[str]) -> int:
         """Resolve and cache a Whisper language token with a safe fallback."""
-        language = (language or self.language).strip().lower()
+        requested_language = language
+        try:
+            language = normalize_language_code(language, self.language)
+        except ValueError:
+            _LOGGER.warning(
+                "Unknown language '%s', falling back to '%s'",
+                requested_language,
+                self.language,
+            )
+            language = self.language
         if language in self._language_token_cache:
             return self._language_token_cache[language]
 
@@ -135,6 +192,13 @@ class HailoWhisperPipeline:
 
         self._language_token_cache[language] = token_id
         return token_id
+
+    def _encode_initial_prompt(self, initial_prompt: str):
+        """Tokenize prompt text using Whisper's leading-space convention."""
+        return self.tokenizer.encode(
+            " " + initial_prompt.strip(),
+            add_special_tokens=False,
+        )
 
     def prepare_language(self, language: Optional[str]) -> None:
         """Compatibility hook used by older callers to warm the token cache."""
@@ -277,8 +341,8 @@ class HailoWhisperPipeline:
 
                             if initial_prompt:
                                 startofprev_token = self.startofprev_token_id
-                                prompt_token_ids = self.tokenizer.encode(
-                                    initial_prompt, add_special_tokens=False
+                                prompt_token_ids = self._encode_initial_prompt(
+                                    initial_prompt
                                 )
                                 # Match OpenAI Whisper: prompt text gets at
                                 # most half the decoder context (minus the
@@ -431,13 +495,31 @@ class HailoWhisperPipeline:
 
                             best = max(all_beams, key=beam_score)
                             generated_tokens = best['tokens']
-
+                            best_finished = any(
+                                best is beam for beam in finished_beams
+                            )
                             _LOGGER.info("Beam search: %d finished, %d active, best_score=%.2f, length=%d",
                                          len(finished_beams), len(active_beams),
                                          beam_score(best), len(best['content']))
                             _LOGGER.debug("Generated tokens: %s", generated_tokens)
                             transcription = self.tokenizer.decode(
                                 generated_tokens, skip_special_tokens=True
+                            )
+                            self.last_decode_metrics = build_decode_metrics(
+                                transcription=transcription,
+                                content_tokens=best['content'],
+                                score=best['score'],
+                                finished=best_finished,
+                                max_content_length=max_content_length,
+                            )
+                            _LOGGER.info(
+                                "Decode metrics: token_count=%d, "
+                                "avg_logprob=%.3f, compression_ratio=%.3f, "
+                                "truncated=%s",
+                                self.last_decode_metrics["token_count"],
+                                self.last_decode_metrics["avg_logprob"],
+                                self.last_decode_metrics["compression_ratio"],
+                                self.last_decode_metrics["truncated"],
                             )
                             _LOGGER.debug("Transcription: '%s'", transcription)
                             self._requests.set_result(future, transcription)

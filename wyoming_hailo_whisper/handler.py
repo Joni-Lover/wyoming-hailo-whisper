@@ -15,7 +15,7 @@ from wyoming.server import AsyncEventHandler
 
 from wyoming_hailo_whisper.common.postprocessing import clean_transcription
 from wyoming_hailo_whisper.common.preprocessing import improve_input_audio, preprocess
-from wyoming_hailo_whisper.const import DEFAULT_LANGUAGE
+from wyoming_hailo_whisper.const import DEFAULT_LANGUAGE, normalize_language_code
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,7 +46,10 @@ class HailoWhisperEventHandler(AsyncEventHandler):
         self.model_lock = model_lock
         self.audio = bytes()
         self.audio_converter = AudioChunkConverter(rate=16000, width=2, channels=1)
-        self._default_language = cli_args.language or DEFAULT_LANGUAGE
+        self._default_language = normalize_language_code(
+            cli_args.language,
+            DEFAULT_LANGUAGE,
+        )
         self._language = self._default_language
 
     def _model_chunk_length(self) -> float:
@@ -106,7 +109,18 @@ class HailoWhisperEventHandler(AsyncEventHandler):
     async def handle_event(self, event: Event) -> bool:
         if Transcribe.is_type(event.type):
             transcribe = Transcribe.from_event(event)
-            self._language = transcribe.language or self._default_language
+            try:
+                self._language = normalize_language_code(
+                    transcribe.language,
+                    self._default_language,
+                )
+            except ValueError:
+                _LOGGER.warning(
+                    "Unsupported request language '%s'; using '%s'",
+                    transcribe.language,
+                    self._default_language,
+                )
+                self._language = self._default_language
             _LOGGER.debug("Language set to %s", self._language)
             return True
 

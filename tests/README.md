@@ -116,7 +116,7 @@ pytest tests/test_audio_utils.py::TestLogMelSpectrogram::test_generates_correct_
 **Key Topics:**
 - **Repetition Penalty** - Preventing token loops
 - **Temperature Sampling** - Token selection strategies
-- **Transcription Cleaning** - Removing duplicate sentences
+- **Transcription Cleaning** - Conservative whitespace-only normalization
 
 **Example Test:**
 ```bash
@@ -130,7 +130,8 @@ pytest tests/test_postprocessing.py::TestRepetitionPenalty::test_reduces_logits_
 - Punctuation tokens (11, 13) are excluded from penalty
 - Temperature = 0 → greedy decoding (argmax)
 - Temperature > 0 → sampling with randomness
-- Duplicate sentences are detected case-insensitively and removed
+- Repeated or progressively refined commands are preserved
+- Final cleanup does not invent punctuation or rewrite model wording
 
 ### 4. Handler Tests (`test_handler.py`)
 
@@ -219,7 +220,7 @@ pytest tests/test_integration.py::TestEndToEndAudioProcessing::test_complete_aud
 
 6. Text Generation (postprocessing.py)
    ├─ Tokenizer.decode: tokens → raw text
-   ├─ clean_transcription: remove duplicates
+   ├─ clean_transcription: normalize whitespace without rewriting meaning
    ├─ Remove [BLANK_AUDIO] markers
    └─ Output: Final transcription text
 
@@ -297,7 +298,7 @@ print(f"Shape: {mel_spectrograms[0].shape}")
 ```python
 from wyoming_hailo_whisper.common import postprocessing
 
-# Raw transcription with issues
+# Raw transcription with meaningful repetition
 raw = "Hello world. Hello world. Hello"
 
 # Clean it
@@ -305,7 +306,7 @@ cleaned = postprocessing.clean_transcription(raw)
 
 print(f"Raw: '{raw}'")
 print(f"Cleaned: '{cleaned}'")
-# Output: "Hello world."
+# Output: "Hello world. Hello world. Hello"
 ```
 
 ### Example 3: Test Repetition Penalty

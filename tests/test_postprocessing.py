@@ -4,11 +4,12 @@ Tests for postprocessing functions.
 These tests demonstrate how the decoder output is processed:
 1. Repetition penalty to discourage repeated tokens
 2. Temperature sampling for token selection
-3. Transcription cleaning to remove duplicates
+3. Conservative transcription whitespace cleanup
 """
 
 import numpy as np
 import pytest
+
 from wyoming_hailo_whisper.common import postprocessing
 
 
@@ -282,85 +283,56 @@ class TestTemperatureSampling:
 
 
 class TestCleanTranscription:
-    """
-    Tests for clean_transcription.
+    """Tests for conservative output cleanup."""
 
-    This demonstrates how repeated sentences are removed from transcriptions.
-    Whisper sometimes "hallucinates" repeated text, especially at the end.
-    """
-
-    def test_removes_exact_duplicate_sentences(self):
-        """
-        Shows that exact duplicate sentences are removed.
-
-        This is common when Whisper reaches the end of audio and starts looping.
-        """
+    def test_preserves_exact_duplicate_sentences(self):
         transcription = "Hello world. Hello world."
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        # Should keep only one occurrence
-        assert cleaned == "Hello world."
+        assert cleaned == transcription
 
-    def test_removes_substring_repetitions(self):
-        """
-        Shows that partial repetitions are also detected.
-
-        Example: "Hello world. Hello" → "Hello world."
-        """
-        transcription = "The weather is nice. The weather is nice. The weather"
+    def test_preserves_more_specific_follow_up_command(self):
+        transcription = "Включи свет. Включи свет в гостиной."
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        # Should stop at first complete sentence
-        assert cleaned == "The weather is nice."
+        assert cleaned == transcription
 
     def test_keeps_non_repeated_sentences(self):
-        """Shows that different sentences are preserved."""
         transcription = "Hello world. How are you? Nice weather today."
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        # All sentences should be kept
-        assert cleaned == "Hello world. How are you? Nice weather today."
+        assert cleaned == transcription
 
-    def test_handles_questions(self):
-        """Shows that question marks are treated as sentence delimiters."""
+    def test_preserves_repeated_questions(self):
         transcription = "What is your name? What is your name?"
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        assert cleaned == "What is your name?"
+        assert cleaned == transcription
 
-    def test_adds_period_if_missing(self):
-        """Shows that a period is added if the transcription doesn't end with punctuation."""
+    def test_does_not_invent_terminal_punctuation(self):
         transcription = "Hello world"
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        assert cleaned == "Hello world."
+        assert cleaned == transcription
 
-    def test_case_insensitive_comparison(self):
-        """
-        Shows that repetition detection is case-insensitive.
-
-        "Hello World. hello world." → "Hello World."
-        """
+    def test_preserves_case_and_repetition(self):
         transcription = "Hello World. hello world."
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        # Case shouldn't matter for detection
-        assert cleaned == "Hello World."
+        assert cleaned == transcription
 
-    def test_preserves_first_occurrence(self):
-        """Shows that the first occurrence is kept when duplicates are found."""
-        transcription = "First sentence. Second sentence. First sentence."
+    def test_collapses_whitespace_only(self):
+        transcription = "  включи\n\t свет   в гостиной  "
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        # Should keep sentences up to where repetition starts
-        assert "First sentence. Second sentence." in cleaned
+        assert cleaned == "включи свет в гостиной"
 
     def test_empty_transcription(self):
         """Shows handling of edge case: empty or whitespace-only input."""
@@ -369,6 +341,18 @@ class TestCleanTranscription:
 
         result = postprocessing.clean_transcription("   ")
         assert result == ""
+
+    def test_compression_ratio_handles_empty_text(self):
+        assert postprocessing.compression_ratio("") == 0.0
+
+    def test_compression_ratio_flags_highly_repetitive_text(self):
+        repetitive = "включи свет " * 100
+        varied = " ".join(str(value) for value in range(100))
+
+        assert (
+            postprocessing.compression_ratio(repetitive)
+            > postprocessing.compression_ratio(varied)
+        )
 
 
 class TestPostprocessingIntegration:
@@ -427,32 +411,22 @@ class TestPostprocessingIntegration:
         assert len(generated_tokens) < max_length
         assert len(generated_tokens) >= 5
 
-    def test_cleaning_simulated_transcription(self):
-        """
-        Shows how text cleaning works on realistic Whisper output.
-
-        Whisper sometimes generates:
-        - Repeated phrases at the end
-        - Incomplete final sentences
-        - Lowercased repetitions
-        """
-        # Simulate Whisper output with common issues
+    def test_cleaning_preserves_simulated_transcription(self):
         transcription = (
             "The quick brown fox jumps over the lazy dog. "
             "It was a beautiful day. "
-            "The quick brown fox jumps over the lazy dog."  # Exact repeat
+            "The quick brown fox jumps over the lazy dog."
         )
 
         cleaned = postprocessing.clean_transcription(transcription)
 
-        print(f"\n=== Transcription Cleaning ===")
+        print("\n=== Transcription Cleaning ===")
         print(f"Original length: {len(transcription)} chars")
         print(f"Cleaned length: {len(cleaned)} chars")
         print(f"Original: {transcription}")
         print(f"Cleaned: {cleaned}")
 
-        # Should remove the repeated sentence
-        assert cleaned == "The quick brown fox jumps over the lazy dog. It was a beautiful day."
+        assert cleaned == transcription
 
     def test_prevents_infinite_loops(self):
         """
@@ -493,7 +467,7 @@ class TestPostprocessingIntegration:
                 # After first occurrence: 10.0 / 1.5 = 6.67
                 assert current_logit < 10.0
 
-        print(f"\n=== Anti-Loop Test ===")
+        print("\n=== Anti-Loop Test ===")
         print(f"Generated tokens: {generated_tokens[:10]}...")
         print(f"Token {loop_token} appears {generated_tokens.count(loop_token)} times")
 

@@ -69,6 +69,20 @@ wget -P decoder_assets/base/decoder_tokenization "https://hailo-csdata.s3.eu-wes
 wget -P decoder_assets/base/decoder_tokenization "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/npy%20files/whisper/decoder_assets/base/decoder_tokenization/token_embedding_weight_base.npy"
 
 
-echo "Download complete."
+echo "Downloading and bundling tiny/base Whisper tokenizers..."
+python - <<'PY'
+from pathlib import Path
 
+from transformers import AutoTokenizer
+
+assets_root = Path("decoder_assets")
+for variant in ("tiny", "base"):
+    destination = assets_root / variant / "tokenizer"
+    tokenizer = AutoTokenizer.from_pretrained(f"openai/whisper-{variant}")
+    tokenizer.save_pretrained(destination)
+    print(f"Saved {variant} tokenizer to {destination}")
+PY
+
+
+echo "Download complete."
 

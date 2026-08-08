@@ -16,6 +16,7 @@ from wyoming_hailo_whisper.const import (
     DEFAULT_VARIANT,
     HAILO_VARIANTS,
     LANGUAGE_CODES,
+    normalize_language_code,
 )
 
 from . import __version__
@@ -119,6 +120,11 @@ async def main() -> None:
         format=args.log_format,
     )
     _LOGGER.debug(args)
+
+    try:
+        args.language = normalize_language_code(args.language)
+    except ValueError as err:
+        parser.error(str(err))
 
     if (not args.use_cpu) and args.variant not in HAILO_VARIANTS:
         parser.error(

@@ -93,9 +93,9 @@ pytest tests/test_postprocessing.py::TestCleanTranscription -v
 ```
 
 **What you'll learn:**
-- How repeated sentences are removed
-- Case-insensitive duplicate detection
-- Automatic punctuation addition
+- How whitespace is normalized without changing wording
+- Why repeated or progressively refined commands are preserved
+- How decoder repetition control stays separate from semantic cleanup
 
 ### 6. See Wyoming Protocol in Action
 ```bash
@@ -251,6 +251,62 @@ See `tests/README.md` for comprehensive documentation including:
 - Parameter explanations
 - Learning path recommendations
 - Contributing guidelines
+
+## Russian Hailo8L hardware acceptance
+
+Run this protocol on the Raspberry Pi before merging changes to decoding or
+audio preprocessing. Unit tests do not exercise HailoRT, the HEFs, microphone
+acoustics, or fixed-sequence decoder latency.
+
+### 1. Baseline configuration
+
+```yaml
+variant: base
+device: hailo8l
+language: ru
+use_cpu: false
+beam_size: 1
+enhance_audio: false
+initial_prompt: ""
+hailo_initial_prompt: ""
+debug: false
+```
+
+At startup, confirm that the log reports the expected decoder sequence length
+and a 5-second encoder window. A normal Hailo start must succeed with WAN access
+blocked; the bundled tokenizer is loaded with `local_files_only=True`.
+
+### 2. Fixed Russian corpus
+
+Record 50-100 commands and keep the audio files unchanged between runs. Include:
+
+- short actions: `включи свет`, `закрой шторы`;
+- rooms, device names, numbers, inflected nouns, and negative commands;
+- several speakers and distances;
+- quiet room, fan/ventilation, television, and music conditions;
+- phrases close to the 5-second model boundary.
+
+Store for each sample: reference text, expected Home Assistant intent/entities,
+noise condition, transcript, latency, and the four `Decode metrics` fields.
+
+### 3. Controlled A/B matrix
+
+Run the complete corpus with `beam_size` 1, 3, and 5. Change no other setting.
+Compare exact intent accuracy first, entity accuracy second, then WER and p95
+latency. Treat `truncated=true` on an ordinary short command as a failure even
+when the partial text looks usable.
+
+### 4. Offline cold-start check
+
+After all image/model downloads are complete:
+
+1. block WAN egress for the Raspberry Pi;
+2. restart the add-on or container from a cold boot;
+3. confirm startup makes no Hugging Face request;
+4. transcribe at least ten Russian commands;
+5. restart once more and repeat one command.
+
+Record the selected beam size and results in the PR before merge.
 
 ## Quick Reference
 

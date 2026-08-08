@@ -10,6 +10,8 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -74,6 +76,27 @@ def test_container_entrypoint_rejects_cpu_only_variant_without_cpu():
 
     assert result.returncode == 1
     assert "requires WHISPER_USE_CPU=true" in result.stderr
+
+
+def test_cli_rejects_unknown_default_language(monkeypatch, capsys):
+    main_module = importlib.import_module("wyoming_hailo_whisper.__main__")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "wyoming-hailo-whisper",
+            "--uri",
+            "tcp://127.0.0.1:10600",
+            "--language",
+            "xx-ZZ",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(main_module.main())
+
+    assert exc_info.value.code == 2
+    assert "Unsupported language 'xx-ZZ'" in capsys.readouterr().err
 
 
 def test_addon_entrypoint_rejects_cpu_only_variant_without_cpu():

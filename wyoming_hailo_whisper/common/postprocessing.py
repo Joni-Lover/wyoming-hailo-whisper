@@ -1,8 +1,8 @@
 """Postprocessing functions for Whisper-generated transcriptions."""
 
-import numpy as np
-import re
+import zlib
 
+import numpy as np
 
 excluded_tokens = [11, 13]  # Punctuation tokens to exclude from repetition penalty
 
@@ -162,42 +162,23 @@ def temperature_sampling(logits, temperature=0.0):
 
 
 def clean_transcription(transcription):
-    # An empty decoder result is valid for silence (immediate EOT). Preserve it
-    # instead of turning it into punctuation that looks like a transcription.
+    """Normalize whitespace without rewriting the model's meaning.
+
+    Sentence-level substring de-duplication is unsafe for voice commands. For
+    example, it can discard the more specific second sentence in ``turn on the
+    light; turn on the light in the kitchen``. Repetition control belongs in
+    decoding, while this final step remains deliberately conservative.
+    """
     if not transcription or not transcription.strip():
         return ""
 
-    # Split the transcription into sentences using both '.' and '?' as delimiters
-    sentences = re.split(r'(?<=[.?])\s+', transcription)
-    
-    # Initialize a list to store unique sentences
-    unique_sentences = []
-    
-    # Iterate through the sentences
-    for sentence in sentences:
-        # Check if any part of the current sentence has already appeared in the unique sentences
-        for unique_sentence in unique_sentences:
-            # Normalize both sentences for comparison
-            normalized_current = sentence.lower().strip()
-            normalized_unique = unique_sentence.lower().strip()
-            
-            # Check if the current sentence is a substring of the unique sentence or vice versa
-            if normalized_current in normalized_unique or normalized_unique in normalized_current:
-                # If a repetition is found, stop processing and return the cleaned transcription
-                cleaned_transcription = ' '.join(unique_sentences)
-                #cleaned_transcription = '. '.join(unique_sentences)
-                # Ensure the last character is a proper delimiter (e.g., '.' or '?')
-                if not cleaned_transcription.endswith(('.', '?')):
-                    cleaned_transcription += '.'
-                return cleaned_transcription
-        
-        # If no repetition is found, add the current sentence to the unique list
-        unique_sentences.append(sentence.strip())
-    
-    # If no repetition is found, join all sentences and return
-    #cleaned_transcription = '. '.join(unique_sentences)
-    cleaned_transcription = ' '.join(unique_sentences)
-    # Ensure the last character is a proper delimiter (e.g., '.' or '?')
-    if not cleaned_transcription.endswith(('.', '?')):
-        cleaned_transcription += '.'
-    return cleaned_transcription
+    return " ".join(transcription.split())
+
+
+def compression_ratio(text: str) -> float:
+    """Return Whisper's gzip-style repetition diagnostic for decoded text."""
+    if not text:
+        return 0.0
+
+    encoded = text.encode("utf-8")
+    return len(encoded) / len(zlib.compress(encoded))

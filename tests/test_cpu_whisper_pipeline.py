@@ -50,6 +50,20 @@ def test_transcribe_audio_splits_audio_longer_than_30_seconds():
     )
 
 
+def test_transcribe_audio_normalizes_wyoming_locale():
+    pipeline = _pipeline_without_model_load()
+
+    pipeline._transcribe_audio(
+        np.zeros(16000, dtype=np.float32),
+        language="ru_RU",
+    )
+
+    pipeline.processor.get_decoder_prompt_ids.assert_called_once_with(
+        language="ru",
+        task="transcribe",
+    )
+
+
 def test_transcribe_audio_accepts_empty_input():
     pipeline = _pipeline_without_model_load()
 

@@ -8,16 +8,16 @@ These tests demonstrate how the server handles Wyoming protocol events:
 4. Describe events - returning server info
 """
 
-import asyncio
 import argparse
+import asyncio
+from unittest.mock import AsyncMock, Mock, patch
+
+import numpy as np
 import pytest
 import pytest_asyncio
-import numpy as np
-from unittest.mock import Mock, AsyncMock, MagicMock, patch
-from wyoming.event import Event
+from wyoming.asr import Transcribe
 from wyoming.audio import AudioChunk, AudioStop
-from wyoming.asr import Transcribe, Transcript
-from wyoming.info import Describe, Info, AsrProgram, AsrModel
+from wyoming.info import AsrModel, AsrProgram, Describe, Info
 
 from wyoming_hailo_whisper.handler import HailoWhisperEventHandler
 
@@ -139,6 +139,18 @@ class TestHailoWhisperEventHandler:
 
         # Should update language
         assert handler._language == "es"
+
+    @pytest.mark.asyncio
+    async def test_normalizes_transcribe_locale(self, handler):
+        await handler.handle_event(Transcribe(language="ru-RU").event())
+
+        assert handler._language == "ru"
+
+    @pytest.mark.asyncio
+    async def test_unknown_transcribe_language_uses_configured_default(self, handler):
+        await handler.handle_event(Transcribe(language="xx-ZZ").event())
+
+        assert handler._language == "en"
 
     @pytest.mark.asyncio
     async def test_accumulates_audio_chunks(self, handler):
@@ -282,7 +294,7 @@ class TestHailoWhisperEventHandler:
                 chunk_offset=0.0,
             )
 
-        assert result == "Hello."
+        assert result == "Hello"
         assert mock_model.get_transcription.call_count == 3
 
     @pytest.mark.asyncio
@@ -291,8 +303,8 @@ class TestHailoWhisperEventHandler:
         Shows how transcription output is cleaned.
 
         Process:
-        1. Model returns raw transcription (may have repetitions)
-        2. clean_transcription() removes duplicates
+        1. Model returns raw transcription (which may contain meaningful repetition)
+        2. clean_transcription() preserves the wording
         3. "[BLANK_AUDIO]" markers are removed
         4. Result is stripped of whitespace
         """
@@ -315,9 +327,9 @@ class TestHailoWhisperEventHandler:
         sent_event = handler.write_event.call_args[0][0]
         text = sent_event.data["text"]
 
-        # Should remove [BLANK_AUDIO] and duplicate sentences
+        # Silence markers are removed, but model wording is preserved.
         assert "[BLANK_AUDIO]" not in text
-        assert text == "Hello."  # Duplicate removed by clean_transcription
+        assert text == "Hello. Hello."
 
     @pytest.mark.asyncio
     async def test_uses_model_lock(self, handler, mock_model, mock_model_lock):
@@ -338,7 +350,6 @@ class TestHailoWhisperEventHandler:
         mock_model.get_transcription.return_value = "Test"
 
         # Mock the lock to verify it's used
-        original_lock = handler.model_lock
         handler.model_lock = AsyncMock()
         handler.model_lock.__aenter__ = AsyncMock()
         handler.model_lock.__aexit__ = AsyncMock()

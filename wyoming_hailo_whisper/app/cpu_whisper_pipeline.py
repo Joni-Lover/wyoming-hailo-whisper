@@ -10,6 +10,7 @@ import torch
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 from wyoming_hailo_whisper.app.request_queue import InferenceRequestQueue
+from wyoming_hailo_whisper.const import normalize_language_code
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,6 +96,8 @@ class CpuWhisperPipeline:
         audio = np.asarray(audio, dtype=np.float32)
         if not audio.size:
             return ""
+
+        language = normalize_language_code(language)
 
         chunk_samples = int(self.get_model_input_audio_length() * 16000)
         transcriptions = []
