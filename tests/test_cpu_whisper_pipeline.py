@@ -1,16 +1,20 @@
 """Tests for CPU Whisper chunking without loading model weights."""
 
-from queue import Empty, Queue
+from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import torch
 
 from wyoming_hailo_whisper.app.cpu_whisper_pipeline import (
+    DEFAULT_DECODER_CONTEXT_LENGTH,
+    DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_TRANSCRIPTION_TIMEOUT_SEC,
     CpuWhisperPipeline,
 )
+from wyoming_hailo_whisper.app.request_queue import InferenceRequestQueue
 
 
 def _pipeline_without_model_load():
@@ -72,12 +76,50 @@ def test_transcribe_audio_builds_prompt_with_whisper_prompt_api():
     pipeline.processor.tokenizer.encode.assert_not_called()
 
 
+def test_transcribe_audio_caps_long_prompt_and_preserves_output_budget():
+    pipeline = _pipeline_without_model_load()
+    pipeline.processor.get_decoder_prompt_ids.return_value = [
+        (1, 10),
+        (2, 20),
+        (3, 30),
+    ]
+    pipeline.processor.get_prompt_ids.return_value = torch.arange(400)
+    pipeline.model.config.max_target_positions = DEFAULT_DECODER_CONTEXT_LENGTH
+
+    pipeline._transcribe_audio(
+        np.zeros(16000, dtype=np.float32),
+        language="en",
+        initial_prompt="very long prompt",
+    )
+
+    generate_kwargs = pipeline.model.generate.call_args.kwargs
+    prompt_ids = generate_kwargs["prompt_ids"]
+    assert len(prompt_ids) == DEFAULT_DECODER_CONTEXT_LENGTH // 2
+    assert prompt_ids[0].item() == 0  # Preserve <|startofprev|>.
+    assert prompt_ids[-1].item() == 399  # Keep the most recent context.
+    assert generate_kwargs["max_new_tokens"] == 220
+
+
+def test_transcribe_audio_keeps_default_budget_without_prompt():
+    pipeline = _pipeline_without_model_load()
+
+    pipeline._transcribe_audio(
+        np.zeros(16000, dtype=np.float32),
+        language="en",
+    )
+
+    assert (
+        pipeline.model.generate.call_args.kwargs["max_new_tokens"]
+        == DEFAULT_MAX_NEW_TOKENS
+    )
+
+
 def test_inference_failure_is_raised_without_poisoning_worker():
     pipeline = CpuWhisperPipeline.__new__(CpuWhisperPipeline)
     pipeline.data_queue = Queue()
-    pipeline.results_queue = Queue()
+    pipeline._requests = InferenceRequestQueue("CPU transcription")
+    pipeline._error = None
     pipeline.running = True
-    pipeline.data_queue.put((np.zeros(16000, dtype=np.float32), "en", ""))
     failure = RuntimeError("CPU generation failed")
 
     def fail_request(*_args, **_kwargs):
@@ -85,6 +127,7 @@ def test_inference_failure_is_raised_without_poisoning_worker():
         raise failure
 
     pipeline._transcribe_audio = MagicMock(side_effect=fail_request)
+    pipeline.send_data(np.zeros(16000, dtype=np.float32), "en", "")
 
     pipeline._inference_loop()
 
@@ -93,18 +136,23 @@ def test_inference_failure_is_raised_without_poisoning_worker():
 
     assert exc_info.value is failure
 
-    pipeline.results_queue.put("next request succeeded")
+    pipeline.running = True
+    next_future = pipeline._requests.submit()
+    pipeline._requests.set_result(next_future, "next request succeeded")
     assert pipeline.get_transcription(timeout_sec=0.01) == "next request succeeded"
 
 
 def test_default_transcription_timeout_is_finite():
     pipeline = CpuWhisperPipeline.__new__(CpuWhisperPipeline)
-    pipeline.results_queue = MagicMock()
-    pipeline.results_queue.get.side_effect = Empty
+    pipeline._requests = MagicMock()
+    pipeline._requests.get_result.side_effect = TimeoutError(
+        "Timed out waiting for CPU transcription after 300.0 seconds"
+    )
+    pipeline._error = None
 
     with pytest.raises(TimeoutError, match="300.0 seconds"):
         pipeline.get_transcription()
 
-    pipeline.results_queue.get.assert_called_once_with(
-        timeout=DEFAULT_TRANSCRIPTION_TIMEOUT_SEC
+    pipeline._requests.get_result.assert_called_once_with(
+        DEFAULT_TRANSCRIPTION_TIMEOUT_SEC
     )

@@ -1,9 +1,11 @@
 """Preprocessing functions for Whisper audio data."""
 
-import wyoming_hailo_whisper.common.audio_utils as audio_utils
-import numpy as np
 import logging
-from scipy.signal import butter, sosfilt, stft, istft
+
+import numpy as np
+from scipy.signal import butter, istft, sosfilt, stft
+
+from wyoming_hailo_whisper.common import audio_utils
 
 _LOGGER = logging.getLogger(__name__)
 _MAX_NOISE_SPECTRAL_FLATNESS = 0.45
@@ -26,7 +28,14 @@ def _spectral_flatness(frame):
     )
 
 
-def preprocess(audio, is_nhwc=False, chunk_length = 10, chunk_offset=0, max_duration = 60, overlap=0.0):
+def preprocess(
+    audio,
+    is_nhwc=False,
+    chunk_length=10,
+    chunk_offset=0,
+    max_duration=60,
+    overlap=0.0,
+):
     """
     Generate the mel spectrograms
 
@@ -37,27 +46,42 @@ def preprocess(audio, is_nhwc=False, chunk_length = 10, chunk_offset=0, max_dura
     - max_duration: Max duration of the audio sample to process.
     - overlap: Overlap between chunks. This is useful for continuous audio processing. Add some overlap (e.g. 0.2) when processing an audio longer than 10 seonds.
     """
-    # Limit the audio duration
+    if chunk_length <= 0:
+        raise ValueError("chunk_length must be greater than zero")
+    if chunk_offset < 0:
+        raise ValueError("chunk_offset must be non-negative")
+    if max_duration <= 0:
+        raise ValueError("max_duration must be greater than zero")
+    if not 0 <= overlap < 1:
+        raise ValueError("overlap must be in the range [0, 1)")
+
+    audio = np.asarray(audio)
+
+    # Limit processing duration after the requested start offset.
     sample_rate = audio_utils.SAMPLE_RATE
-    max_samples = max_duration * sample_rate
+    max_samples = int(max_duration * sample_rate)
     offset = int(chunk_offset * sample_rate)
 
     # Define parameters for chunking
     segment_duration = chunk_length  # in seconds
-    segment_samples = segment_duration * sample_rate
+    segment_samples = int(segment_duration * sample_rate)
+    if segment_samples < 1:
+        raise ValueError("chunk_length is shorter than one audio sample")
     step = int(segment_samples * (1 - overlap))
+    if step < 1:
+        raise ValueError("overlap leaves no samples between chunks")
 
-    audio = audio[offset:max_samples]
+    audio = audio[offset:offset + max_samples]
     mel_spectrograms = []
 
     for start in range(0, len(audio), step):
-        end = int(start + segment_samples)
+        end = start + segment_samples
         if start >= len(audio):
             break
         chunk = audio[start:end]
 
         # Ensure the chunk is 10s long (Whisper requires this)
-        chunk = audio_utils.pad_or_trim(chunk, int(segment_duration * sample_rate))
+        chunk = audio_utils.pad_or_trim(chunk, segment_samples)
 
         # Convert to Mel spectrogram
         mel = audio_utils.log_mel_spectrogram(chunk).to("cpu")
@@ -124,7 +148,12 @@ def spectral_noise_reduce(audio, sample_rate, spectral_floor=0.08):
     nperseg = min(512, len(audio))
     noverlap = nperseg // 2
 
-    f, t, Zxx = stft(audio, fs=sample_rate, nperseg=nperseg, noverlap=noverlap)
+    _, _, Zxx = stft(
+        audio,
+        fs=sample_rate,
+        nperseg=nperseg,
+        noverlap=noverlap,
+    )
     magnitude = np.abs(Zxx)
     phase = np.angle(Zxx)
 

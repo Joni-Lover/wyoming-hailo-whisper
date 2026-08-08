@@ -1,6 +1,7 @@
-#!/usr/bin/bash
-
 #!/bin/bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
 
 # Check if the "hefs" directory exists and delete it if it does
 if [ -d "hefs" ]; then
@@ -69,6 +70,5 @@ wget -P decoder_assets/base/decoder_tokenization "https://hailo-csdata.s3.eu-wes
 
 
 echo "Download complete."
-
 
 

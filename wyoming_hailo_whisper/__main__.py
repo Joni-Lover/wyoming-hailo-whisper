@@ -11,6 +11,7 @@ from wyoming.server import AsyncServer
 from wyoming_hailo_whisper.app.whisper_hef_registry import HEF_REGISTRY
 from wyoming_hailo_whisper.const import (
     CPU_VARIANTS,
+    DEFAULT_DEVICE,
     DEFAULT_LANGUAGE,
     DEFAULT_VARIANT,
     HAILO_VARIANTS,
@@ -49,9 +50,9 @@ async def main() -> None:
     parser.add_argument("--uri", required=True, help="unix:// or tcp://")
     parser.add_argument(
         "--device",
-        default="hailo8",
+        default=DEFAULT_DEVICE,
         choices=["hailo8", "hailo8l"],
-        help="Hardware architecture to use (default: hailo8)",
+        help=f"Hardware architecture to use (default: {DEFAULT_DEVICE})",
     )
     parser.add_argument(
         "--variant",

@@ -358,6 +358,36 @@ class TestPreprocess:
         # Chunk 4: 15-20s (padded)
         assert len(mel_spectrograms) >= 3
 
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            ({"chunk_length": 0}, "chunk_length"),
+            ({"chunk_offset": -1}, "chunk_offset"),
+            ({"max_duration": 0}, "max_duration"),
+            ({"overlap": 1.0}, "overlap"),
+            ({"overlap": -0.1}, "overlap"),
+        ],
+    )
+    def test_rejects_invalid_chunking_parameters(self, kwargs, message):
+        with pytest.raises(ValueError, match=message):
+            preprocessing.preprocess(
+                np.ones(16000, dtype=np.float32),
+                **kwargs,
+            )
+
+    def test_max_duration_is_measured_after_chunk_offset(self):
+        sample_rate = 16000
+        audio = np.ones(3 * sample_rate, dtype=np.float32)
+
+        chunks = preprocessing.preprocess(
+            audio,
+            chunk_length=1,
+            chunk_offset=1,
+            max_duration=2,
+        )
+
+        assert len(chunks) == 2
+
     def test_nchw_format(self):
         """
         Shows the difference between NHWC and NCHW format.
