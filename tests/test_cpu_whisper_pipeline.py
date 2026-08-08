@@ -1,13 +1,16 @@
 """Tests for CPU Whisper chunking without loading model weights."""
 
-from queue import Queue
+from queue import Empty, Queue
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from wyoming_hailo_whisper.app.cpu_whisper_pipeline import CpuWhisperPipeline
+from wyoming_hailo_whisper.app.cpu_whisper_pipeline import (
+    DEFAULT_TRANSCRIPTION_TIMEOUT_SEC,
+    CpuWhisperPipeline,
+)
 
 
 def _pipeline_without_model_load():
@@ -92,3 +95,16 @@ def test_inference_failure_is_raised_without_poisoning_worker():
 
     pipeline.results_queue.put("next request succeeded")
     assert pipeline.get_transcription(timeout_sec=0.01) == "next request succeeded"
+
+
+def test_default_transcription_timeout_is_finite():
+    pipeline = CpuWhisperPipeline.__new__(CpuWhisperPipeline)
+    pipeline.results_queue = MagicMock()
+    pipeline.results_queue.get.side_effect = Empty
+
+    with pytest.raises(TimeoutError, match="300.0 seconds"):
+        pipeline.get_transcription()
+
+    pipeline.results_queue.get.assert_called_once_with(
+        timeout=DEFAULT_TRANSCRIPTION_TIMEOUT_SEC
+    )

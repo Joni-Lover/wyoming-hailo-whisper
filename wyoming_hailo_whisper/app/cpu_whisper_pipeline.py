@@ -10,6 +10,11 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 _LOGGER = logging.getLogger(__name__)
 
+# CPU decoding can take substantially longer than Hailo inference, especially
+# for the larger model variants on a Raspberry Pi. Keep the default generous,
+# but finite, so a wedged worker cannot block a Wyoming request forever.
+DEFAULT_TRANSCRIPTION_TIMEOUT_SEC = 300.0
+
 
 class CpuWhisperPipeline:
     """
@@ -130,14 +135,16 @@ class CpuWhisperPipeline:
         self.data_queue.put((data, language, initial_prompt))
 
     def get_transcription(self, timeout_sec: Optional[float] = None):
+        wait_timeout = (
+            DEFAULT_TRANSCRIPTION_TIMEOUT_SEC
+            if timeout_sec is None
+            else timeout_sec
+        )
         try:
-            if timeout_sec is None:
-                result = self.results_queue.get()
-            else:
-                result = self.results_queue.get(timeout=timeout_sec)
+            result = self.results_queue.get(timeout=wait_timeout)
         except Empty as err:
             raise TimeoutError(
-                f"Timed out waiting for transcription after {timeout_sec} seconds"
+                f"Timed out waiting for transcription after {wait_timeout} seconds"
             ) from err
         if isinstance(result, Exception):
             raise result
