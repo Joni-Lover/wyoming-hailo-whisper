@@ -19,6 +19,12 @@ if bashio::config.true 'use_cpu'; then
     ARGS+=(--use-cpu)
     BACKEND="CPU"
 else
+    case "$VARIANT" in
+        small|medium|large-v3)
+            bashio::log.error "Whisper model '$VARIANT' requires use_cpu: true"
+            exit 1
+            ;;
+    esac
     BACKEND="Hailo"
 fi
 

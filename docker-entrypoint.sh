@@ -10,6 +10,13 @@ ARGS=(
 
 if [ "${WHISPER_USE_CPU:-false}" = "true" ]; then
     ARGS+=(--use-cpu)
+else
+    case "${WHISPER_VARIANT:-base}" in
+        small|medium|large-v3)
+            echo "Whisper model '${WHISPER_VARIANT}' requires WHISPER_USE_CPU=true" >&2
+            exit 1
+            ;;
+    esac
 fi
 
 if [ "${WHISPER_ENHANCE_AUDIO:-false}" = "true" ]; then

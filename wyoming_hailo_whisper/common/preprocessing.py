@@ -182,27 +182,20 @@ def spectral_noise_reduce(audio, sample_rate, spectral_floor=0.08):
     return clean_audio.astype(np.float32)
 
 
-def improve_input_audio(audio, vad=True, enhance=False, low_audio_gain=None):
+def improve_input_audio(audio, vad=True, low_audio_gain=True, *, enhance=False):
     """
     Improve the input audio quality before transcription.
 
-    Processing pipeline:
-    1. High-pass filter (remove DC offset, rumble, mains hum)
-    2. Spectral noise reduction (reduce stationary background noise)
-    3. RMS normalization (consistent input level)
-    4. Voice activity detection (find speech onset)
+    ``low_audio_gain`` retains the original third positional parameter and
+    defaults to the legacy 20 dB boost for quiet recordings. ``enhance`` is a
+    separate opt-in DSP chain and takes precedence when enabled.
     """
     sample_rate = audio_utils.SAMPLE_RATE
 
     if np.size(audio) == 0:
         return audio, 0.0
 
-    # Backward-compatible alias used by the original fork. When supplied, keep
-    # its simple 20 dB boost semantics instead of enabling the new DSP chain.
-    if low_audio_gain is not None:
-        if low_audio_gain and audio.size and np.max(np.abs(audio)) < 0.1:
-            audio = apply_gain(audio, gain_db=20)
-    elif enhance:
+    if enhance:
         peak_before = np.max(np.abs(audio))
         rms_before = np.sqrt(np.mean(audio ** 2))
         _LOGGER.info("Audio before enhancement: peak=%.4f, rms=%.4f, samples=%d",
@@ -221,6 +214,8 @@ def improve_input_audio(audio, vad=True, enhance=False, low_audio_gain=None):
         rms_after = np.sqrt(np.mean(audio ** 2))
         _LOGGER.info("Audio after enhancement: peak=%.4f, rms=%.4f",
                      peak_after, rms_after)
+    elif low_audio_gain and np.max(np.abs(audio)) < 0.1:
+        audio = apply_gain(audio, gain_db=20)
 
     start_time = 0
     if vad:

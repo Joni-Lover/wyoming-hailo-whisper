@@ -3,9 +3,14 @@
 import asyncio
 import builtins
 import importlib
+import os
+import subprocess
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_cpu_mode_does_not_import_hailo(monkeypatch):
@@ -49,3 +54,51 @@ def test_cpu_mode_does_not_import_hailo(monkeypatch):
 
     fake_cpu_module.CpuWhisperPipeline.assert_called_once()
     fake_model.stop.assert_called_once()
+
+
+def test_container_entrypoint_rejects_cpu_only_variant_without_cpu():
+    env = os.environ.copy()
+    env.update(
+        WHISPER_VARIANT="large-v3",
+        WHISPER_USE_CPU="false",
+    )
+
+    result = subprocess.run(
+        ["bash", str(PROJECT_ROOT / "docker-entrypoint.sh")],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "requires WHISPER_USE_CPU=true" in result.stderr
+
+
+def test_addon_entrypoint_rejects_cpu_only_variant_without_cpu():
+    run_script = PROJECT_ROOT / "run.sh"
+    command = f"""
+bashio::config() {{
+    case "$1" in
+        device) printf 'hailo8l' ;;
+        variant) printf 'small' ;;
+        language) printf 'en' ;;
+        beam_size) printf '5' ;;
+    esac
+}}
+bashio::config.true() {{ return 1; }}
+bashio::log.error() {{ printf '%s\\n' "$*" >&2; }}
+source {run_script!s}
+"""
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "requires use_cpu: true" in result.stderr

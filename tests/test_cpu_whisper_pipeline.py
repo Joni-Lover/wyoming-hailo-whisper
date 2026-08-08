@@ -1,5 +1,6 @@
 """Tests for CPU Whisper chunking without loading model weights."""
 
+import logging
 from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -140,6 +141,31 @@ def test_inference_failure_is_raised_without_poisoning_worker():
     next_future = pipeline._requests.submit()
     pipeline._requests.set_result(next_future, "next request succeeded")
     assert pipeline.get_transcription(timeout_sec=0.01) == "next request succeeded"
+
+
+def test_normal_logs_do_not_include_prompt_or_transcription(caplog):
+    pipeline = CpuWhisperPipeline.__new__(CpuWhisperPipeline)
+    pipeline.data_queue = Queue()
+    pipeline._requests = InferenceRequestQueue("CPU transcription")
+    pipeline._error = None
+    pipeline.running = True
+
+    def transcribe_once(*_args, **_kwargs):
+        pipeline.running = False
+        return "private recognized speech"
+
+    pipeline._transcribe_audio = transcribe_once
+    pipeline.send_data(
+        np.zeros(16000, dtype=np.float32),
+        "en",
+        "private prompt",
+    )
+
+    with caplog.at_level(logging.INFO):
+        pipeline._inference_loop()
+
+    assert "private prompt" not in caplog.text
+    assert "private recognized speech" not in caplog.text
 
 
 def test_default_transcription_timeout_is_finite():

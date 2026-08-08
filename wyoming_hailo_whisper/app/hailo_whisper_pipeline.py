@@ -41,8 +41,8 @@ class HailoWhisperPipeline:
         variant,
         host="arm64",
         multi_process_service=False,
-        beam_size=1,
         language="en",
+        beam_size=1,
     ):
         """
         Initialize the pipeline.
@@ -50,6 +50,9 @@ class HailoWhisperPipeline:
         :param encoder_model_path: Path to the encoder model file.
         :param decoder_model_path: Path to the decoder model file.
         :param variant: Model variant (e.g., "tiny").
+        :param language: Default language code. Kept before new options for
+            compatibility with the original positional constructor API.
+        :param beam_size: Number of active beams to retain while decoding.
         """
         self.encoder_model_path = encoder_model_path
         self.decoder_model_path = decoder_model_path

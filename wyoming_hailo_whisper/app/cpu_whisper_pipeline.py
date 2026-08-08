@@ -59,11 +59,12 @@ class CpuWhisperPipeline:
                     continue
 
                 try:
-                    _LOGGER.info(
-                        "CPU decode: audio length=%.2fs, language=%s, prompt='%s'",
+                    _LOGGER.debug(
+                        "CPU decode: audio length=%.2fs, language=%s, "
+                        "prompt_supplied=%s",
                         len(audio) / 16000,
                         language,
-                        initial_prompt or "",
+                        bool(initial_prompt),
                     )
 
                     transcription = self._transcribe_audio(
@@ -72,7 +73,7 @@ class CpuWhisperPipeline:
                         initial_prompt=initial_prompt,
                     )
 
-                    _LOGGER.info("CPU transcription: '%s'", transcription)
+                    _LOGGER.debug("CPU transcription: '%s'", transcription)
                     self._requests.set_result(future, transcription)
                 except Exception as err:
                     _LOGGER.exception("Error during CPU inference")

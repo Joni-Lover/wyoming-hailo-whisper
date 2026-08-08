@@ -9,6 +9,7 @@ These tests demonstrate how the audio preprocessing pipeline works:
 
 import numpy as np
 import pytest
+
 from wyoming_hailo_whisper.common import preprocessing
 
 
@@ -193,6 +194,20 @@ class TestImproveInputAudio:
 
         # Should be amplified by 20 dB (10x)
         assert np.max(improved_audio) > np.max(audio) * 5  # At least 5x increase
+
+    def test_legacy_gain_remains_enabled_by_default(self):
+        audio = np.array([0.05, -0.03], dtype=np.float32)
+
+        improved_audio, _ = preprocessing.improve_input_audio(audio, vad=False)
+
+        np.testing.assert_allclose(improved_audio, audio * 10)
+
+    def test_third_positional_argument_still_controls_legacy_gain(self):
+        audio = np.array([0.05, -0.03], dtype=np.float32)
+
+        improved_audio, _ = preprocessing.improve_input_audio(audio, False, False)
+
+        np.testing.assert_array_equal(improved_audio, audio)
 
     def test_empty_audio_with_enhancement_returns_unchanged(self):
         audio = np.array([], dtype=np.float32)
@@ -450,7 +465,7 @@ class TestPreprocessingIntegration:
         assert len(mel_spectrograms) >= 1
         assert mel_spectrograms[0].shape == (1, 1, 1000, 80)
 
-        print(f"\n=== Full Pipeline Results ===")
+        print("\n=== Full Pipeline Results ===")
         print(f"Original audio: {len(audio)/sample_rate:.1f}s, max level: {np.max(audio):.3f}")
         print(f"Speech detected at: {speech_start:.2f}s")
         print(f"Improved max level: {np.max(improved_audio):.3f}")

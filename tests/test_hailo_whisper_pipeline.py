@@ -1,5 +1,6 @@
 """Tests for Hailo worker failure handling without requiring Hailo hardware."""
 
+import inspect
 import sys
 from queue import Queue
 from types import ModuleType
@@ -102,6 +103,20 @@ def test_prompt_budget_reserves_half_of_decoder_context_for_output():
 
     assert prompt_tokens == 223
     assert sequence_length - prefix_length == 220
+
+
+def test_constructor_keeps_legacy_language_positional_slot():
+    parameters = list(inspect.signature(HailoWhisperPipeline).parameters)
+
+    assert parameters[:7] == [
+        "encoder_model_path",
+        "decoder_model_path",
+        "variant",
+        "host",
+        "multi_process_service",
+        "language",
+        "beam_size",
+    ]
 
 
 def test_default_transcription_timeout_is_finite():
