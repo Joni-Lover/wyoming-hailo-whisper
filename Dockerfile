@@ -14,9 +14,9 @@ ENV \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Build args
-ARG S6_OVERLAY_VERSION=3.2.1.0
+ARG S6_OVERLAY_VERSION=3.2.3.0
 ARG BASHIO_VERSION=0.17.5
-ARG TEMPIO_VERSION=2024.11.2
+ARG TEMPIO_VERSION=2026.07.0
 
 # Base system
 WORKDIR /usr/src
