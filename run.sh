@@ -1,17 +1,49 @@
 #!/usr/bin/with-contenv bashio
-CONFIG_PATH=/data/options.json
 
 DEVICE=$(bashio::config 'device')
 VARIANT=$(bashio::config 'variant')
 LANGUAGE=$(bashio::config 'language')
-DEBUG=$(bashio::config 'debug')
+BEAM_SIZE=$(bashio::config 'beam_size')
+INITIAL_PROMPT=$(bashio::config 'initial_prompt')
+HAILO_INITIAL_PROMPT=$(bashio::config 'hailo_initial_prompt')
 
-#    --multi-process-service \
-bashio::log.info "Init Wyoming Hailo device '$DEVICE' with Whisper model '$VARIANT'"
-cd /home/wyoming_hailo_whisper
-python3 -m wyoming_hailo_whisper \
-    --debug \
-    --uri 'tcp://0.0.0.0:10600' \
-    --device "$DEVICE" \
-    --variant "$VARIANT" \
+ARGS=(
+    --uri 'tcp://0.0.0.0:10600'
+    --device "$DEVICE"
+    --variant "$VARIANT"
     --language "$LANGUAGE"
+    --beam-size "$BEAM_SIZE"
+)
+
+if bashio::config.true 'use_cpu'; then
+    ARGS+=(--use-cpu)
+    BACKEND="CPU"
+else
+    case "$VARIANT" in
+        small|medium|large-v3)
+            bashio::log.error "Whisper model '$VARIANT' requires use_cpu: true"
+            exit 1
+            ;;
+    esac
+    BACKEND="Hailo"
+fi
+
+if bashio::config.true 'enhance_audio'; then
+    ARGS+=(--enhance-audio)
+fi
+
+if [[ -n "$INITIAL_PROMPT" ]]; then
+    ARGS+=(--initial-prompt "$INITIAL_PROMPT")
+fi
+
+if [[ -n "$HAILO_INITIAL_PROMPT" ]]; then
+    ARGS+=(--hailo-initial-prompt "$HAILO_INITIAL_PROMPT")
+fi
+
+if bashio::config.true 'debug'; then
+    ARGS+=(--debug)
+fi
+
+bashio::log.info "Starting $BACKEND Whisper model '$VARIANT' (language '$LANGUAGE', beam size $BEAM_SIZE)"
+cd /home/wyoming_hailo_whisper
+exec python3 -m wyoming_hailo_whisper "${ARGS[@]}"

@@ -1,6 +1,6 @@
 name: "Wyoming Hailo Whisper"
 description: "Hailo Whisper model for HA addon"
-version: "0.0.10"
+version: "0.1.2"
 slug: "hailo_whisper_addon"
 init: false
 arch:
@@ -14,7 +14,19 @@ options:
   variant: base
   device: hailo8l
   language: ru
+  use_cpu: false
+  beam_size: 5
+  enhance_audio: false
+  initial_prompt: ""
+  hailo_initial_prompt: ""
+  debug: false
 schema:
-  variant: list(tiny|base)
+  variant: list(tiny|base|small|medium|large-v3)
   device: list(hailo8|hailo8l)
   language: list(en|ru|es|fr|de|it|pt|zh|ja|ko|ar|hi|uk|cs|pl|tr|nl|sv|vi|th)
+  use_cpu: bool
+  beam_size: int(1,10)
+  enhance_audio: bool
+  initial_prompt: str?
+  hailo_initial_prompt: str?
+  debug: bool

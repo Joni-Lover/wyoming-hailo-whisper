@@ -18,7 +18,13 @@ Familiarize yourself with the [HA AddOn official guide](https://developers.home-
 - hailort-4.21.0-cp310-cp310-linux_aarch64.whl
 
 6. Proceed from now on with [HA AddOn official guide, step 2](https://developers.home-assistant.io/docs/add-ons/tutorial#step-2-installing-and-testing-your-add-on)
-7. Use HA Configure panel to configure Hailo device (`hailo8l` or `hailo8`) and Whisper model (`tiny` or `base`)
+7. Use the HA Configure panel to select the device, model, and language.
+
+The existing Hailo configuration remains the default: `use_cpu: false` with
+`tiny` or `base`. CPU mode additionally supports `small`, `medium`, and
+`large-v3`. The add-on also exposes beam size, optional audio enhancement,
+separate initial prompts for CPU/Hailo, and debug logging. Larger variants
+require `use_cpu: true`.
 
 NOTE: HassOS already bundles the Hailo driver. If you are running an old HassOS version, your driver might not be correct.
 

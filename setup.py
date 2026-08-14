@@ -30,8 +30,13 @@ setup(
     author="mpeex",
     author_email="",
     license="MIT",
-    packages=setuptools.find_packages(),
-    package_data={module_name: [str(p.relative_to(module_dir)) for p in data_files]},
+    packages=setuptools.find_packages(exclude=("tests", "tests.*")),
+    package_data={
+        module_name: [
+            str(p.relative_to(module_dir)) for p in data_files
+        ]
+        + ["common/assets/mel_filters.npz"],
+    },
     install_requires=requirements,
     classifiers=[
         "Development Status :: 3 - Alpha",
